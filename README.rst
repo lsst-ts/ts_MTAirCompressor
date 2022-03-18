@@ -2,6 +2,4 @@
 ts_AirCompressors
 #################
 
-
-
-.. Add a brief (few sentence) description of what this package provides.
+Communication with pneumatic air compressors. Collect compressors telemetry. Allows compressor commanding.
