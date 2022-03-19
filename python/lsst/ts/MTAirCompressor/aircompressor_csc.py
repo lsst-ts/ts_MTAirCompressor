@@ -25,9 +25,10 @@ import asyncio
 import traceback
 from lsst.ts import salobj, utils
 
-from pymodbus.client.asynchronous import schedulers
-
-# from pymodbus.client.asynchronous.tcp import AsyncModbusTCPClient as ModbusClient
+# from pymodbus.client.asynchronous import schedulers
+# from pymodbus.client.asynchronous.tcp import (
+#   AsyncModbusTCPClient as ModbusClient
+# )
 from pymodbus.client.sync import ModbusTcpClient as ModbusClient
 
 from . import __version__
@@ -56,7 +57,11 @@ class MTAirCompressorCsc(salobj.BaseCsc):
 
     async def do_start(self, data):
         await super().do_start(data)
-        # loop, self.client = ModbusClient(schedulers.ASYNC_IO, host=self.hostname, loop=asyncio.get_running_loop())
+        # loop, self.client = ModbusClient(
+        #    schedulers.ASYNC_IO,
+        #    host=self.hostname,
+        #    loop=asyncio.get_running_loop(),
+        # )
         self.client = ModbusClient(host=self.hostname)
         self.client.connect()
         self.telemetry_task = asyncio.create_task(self.telemetry_loop())
@@ -76,49 +81,78 @@ class MTAirCompressorCsc(salobj.BaseCsc):
     async def do_reset(self, data):
         await self.client.write_register(0x12D, 0xFF01)
 
-    async def get_info(self):
+    async def update_compressor_info(self):
         def to_string(arr):
             return "".join(map(chr, arr))
 
         info1 = self.client.read_holding_registers(0xC7, 23, unit=self.unit)
+        if info1.isError():
+            raise RuntimeError(
+                f"Cannot read compressor version: 0x{info1.function_code:02X}"
+            )
         await self.evt_compressorInfo.set_write(
-            force_output=True,
             softwareVersion=to_string(info1.registers[0:14]),
             serialNumber=to_string(info1.registers[14:23]),
         )
 
+    async def update_analog_data(self):
+        analog1 = self.client.read_holding_registers(0x1E, 1, unit=self.unit)
+        analog2 = self.client.read_holding_registers(0x22, 14, unit=self.unit)
+        if analog1.isError() or analog2.isError():
+            raise RuntimeError(
+                f"Cannot read telemetry: 0x{analog1.function_code:02X} 0x{analog2.function_code:02X}"
+            )
+
+        await self.tel_analogData.set_write(
+            force_output=True,
+            waterLevel=analog1.registers[0],
+            targetSpeed=analog2.registers[0],
+            motorCurrent=analog2.registers[1] / 10.0,
+            heatsinkTemperature=analog2.registers[2],
+            dclinkVoltage=analog2.registers[3],
+            motorSpeedPercentage=analog2.registers[4],
+            motorSpeedRPM=analog2.registers[5],
+            motorInput=analog2.registers[6] / 10.0,
+            compressorPowerConsumption=analog2.registers[7] / 10.0,
+            compressorVolumePercentage=analog2.registers[8],
+            compressorVolume=analog2.registers[9] / 10.0,
+            groupVolume=analog2.registers[10] / 10.0,
+            stage1OutputPressure=analog2.registers[11],
+            linePressure=analog2.registers[12],
+            stage1OutputTemperature=analog2.registers[13],
+        )
+
+    async def update_timer(self):
+        timer = self.client.read_holding_registers(0x39, 8, unit=self.unit)
+        if timer.isError():
+            raise RuntimeError(f"Cannot read timers: 0x{timer.function_code:02X}")
+
+        def to_64(a):
+            return a[0] << 16 | a[1]
+
+        await self.evt_timerInfo.set_write(
+            runningHours=to_64(timer.registers[0:2]),
+            loadedHours=to_64(timer.registers[2:4]),
+            lowestServiceCounter=timer.registers[4],
+            runOnTimer=timer.registers[5],
+            loadedHours50Percent=to_64(timer.registers[6:8]),
+        )
+
     async def telemetry_loop(self):
+        timerUpdate = 0
         while True:
             try:
                 if self.first_run:
-                    await self.get_info()
+                    await self.update_compressor_info()
                     self.first_run = False
 
-                analog1 = self.client.read_holding_registers(0x1E, 1, unit=self.unit)
-                analog2 = self.client.read_holding_registers(0x22, 14, unit=self.unit)
-                if analog1.isError() or analog2.isError():
-                    raise RuntimeError(
-                        f"Cannot read telemetry: 0x{analog1.function_code:02X} 0x{analog2.function_code:02X}"
-                    )
+                if timerUpdate <= 0:
+                    await self.update_timer()
+                    timerUpdate = 60
+                else:
+                    timerUpdate -= 1
 
-                await self.tel_analogData.set_write(
-                    force_output=True,
-                    waterLevel=analog1.registers[0],
-                    targetSpeed=analog2.registers[0],
-                    motorCurrent=analog2.registers[1] / 10.0,
-                    heatsinkTemperature=analog2.registers[2],
-                    dclinkVoltage=analog2.registers[3],
-                    motorSpeedPercentage=analog2.registers[4],
-                    motorSpeedRPM=analog2.registers[5],
-                    motorInput=analog2.registers[6] / 10.0,
-                    compressorPowerConsumption=analog2.registers[7],
-                    compressorVolumePercentage=analog2.registers[8],
-                    compressorVolume=analog2.registers[9],
-                    groupVolume=analog2.registers[10],
-                    stage1OutputPressure=analog2.registers[11],
-                    linePressure=analog2.registers[12],
-                    stage1OutputTemperature=analog2.registers[13],
-                )
+                await self.update_analog_data()
 
             except Exception as er:
                 print("Exception", str(er))
