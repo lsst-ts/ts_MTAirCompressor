@@ -81,6 +81,53 @@ class MTAirCompressorCsc(salobj.BaseCsc):
     async def do_reset(self, data):
         await self.client.write_register(0x12D, 0xFF01)
 
+    async def update_status(self):
+        status = self.client.read_holding_registers(0x30, 3, unit=self.unit)
+        if status.isError():
+            raise RuntimeError(f"Cannot read status: 0x{status.function_code:02X}")
+
+        def _statusBits(fields, value):
+            ret = {}
+            for f in fields:
+                ret[f] = value & 0x0001
+                value >>= 1
+            return ret
+
+        self.evt_status.set(
+            **_statusBits(
+                (
+                    "readyToStart",
+                    "operating",
+                    "startInhibit",
+                    "motorStartPhase",
+                    "offLoad",
+                    "onLoad",
+                    "softStop",
+                    "runOnTimer",
+                    "fault",
+                    "warning",
+                    "serviceRequired",
+                    "minAllowedSpeedAchieved",
+                    "maxAllowedSpeedAchieved",
+                ),
+                status.registers[0],
+            )
+        )
+        await self.evt_status.set_write(
+            force_output=self.first_run,
+            **_statusBits(
+                (
+                    "startByRemote",
+                    "startWithTimerControl",
+                    "startWithPressureRequirement",
+                    "startAfterDePressurise",
+                    "startAfterPowerLoss",
+                    "startAfterDryerPreRun",
+                ),
+                status.registers[2],
+            ),
+        )
+
     async def update_compressor_info(self):
         def to_string(arr):
             return "".join(map(chr, arr))
@@ -142,6 +189,9 @@ class MTAirCompressorCsc(salobj.BaseCsc):
         timerUpdate = 0
         while True:
             try:
+                await self.update_status()
+                await self.update_analog_data()
+
                 if self.first_run:
                     await self.update_compressor_info()
                     self.first_run = False
@@ -151,8 +201,6 @@ class MTAirCompressorCsc(salobj.BaseCsc):
                     timerUpdate = 60
                 else:
                     timerUpdate -= 1
-
-                await self.update_analog_data()
 
             except Exception as er:
                 print("Exception", str(er))
