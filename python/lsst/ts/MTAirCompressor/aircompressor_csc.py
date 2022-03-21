@@ -33,6 +33,26 @@ from pymodbus.client.sync import ModbusTcpClient as ModbusClient
 
 from . import __version__
 
+class ModbusError(RuntimeError):
+    """Exception raised on modbus errors. Please note that shall be superset by
+    pymodbus solution, if it ever materialize, See:
+    https://github.com/riptideio/pymodbus/issues/298
+
+    Parameters
+    ----------
+    modbus_exception : `pymodbus.pdu.ExceptionResponse`
+        Exception returned from Modbus function
+    """
+    def __init__(self, what, modbus_exception, address):
+        if modbus_exception.original_code == 4:
+            message = f"Cannot address 0x{address:04x}: {modbus_exception.exception_code}"
+        elif modbus_exception.original_code == 6:
+            message = f"Cannot write register address 0x{address:04x}: {modbus_exception.exception_code}"
+        else:
+            message = f"Cannot call function {modbus_exception.function_code} : {modbus_exception.exception_code}, address 0x{address:04x}"
+        super().__init__(what + " " + message)
+
+        self.exception = modbus_exception
 
 class MTAirCompressorCsc(salobj.BaseCsc):
     """AirCompressors CSC
@@ -66,25 +86,28 @@ class MTAirCompressorCsc(salobj.BaseCsc):
         self.client.connect()
         self.telemetry_task = asyncio.create_task(self.telemetry_loop())
 
-    async def do_enable(self, data):
+    async def end_enable(self, data):
         await super().do_enable(data)
-        poweredOn = await self.client.write_register(0x12B, 0xFF01)
+        poweredOn = self.client.write_register(0x12B, 0xFF01, unit=self.unit)
         if poweredOn.isError():
-            raise RuntimeError(
-                f"Cannot power on compressor: 0x{poweredOn.function_code:02X}"
-            )
+            raise ModbusError("Cannot power on compressor", poweredOn, 0x12B)
 
     async def end_disable(self, data):
-        await self.client.write_register(0x12B, 0xFF00)
+        poweredDown = self.client.write_register(0x12B, 0xFF00, unit=self.unit)
+        if poweredDown.isError():
+            raise ModbusError("Cannot power off compressor", poweredDown, 0x12B)
         self.telemetry_task.cancel()
 
     async def do_reset(self, data):
-        await self.client.write_register(0x12D, 0xFF01)
+        reseted = self.client.write_register(0x12D, 0xFF01, unit=self.unit)
+        if reseted.isError():
+            self.fail("Cannot reset compressor")
+            raise ModbusError("Cannot reset compressor", poweredDown, 0x12B)
 
     async def update_status(self):
         status = self.client.read_holding_registers(0x30, 3, unit=self.unit)
         if status.isError():
-            raise RuntimeError(f"Cannot read status: 0x{status.function_code:02X}")
+            raise ModbusError("Cannot read status", status, 0x30)
 
         def _statusBits(fields, value):
             ret = {}
@@ -134,9 +157,7 @@ class MTAirCompressorCsc(salobj.BaseCsc):
 
         info1 = self.client.read_holding_registers(0xC7, 23, unit=self.unit)
         if info1.isError():
-            raise RuntimeError(
-                f"Cannot read compressor version: 0x{info1.function_code:02X}"
-            )
+            raise ModbusError("Cannot read compressor version", info1, 0xC7)
         await self.evt_compressorInfo.set_write(
             softwareVersion=to_string(info1.registers[0:14]),
             serialNumber=to_string(info1.registers[14:23]),
@@ -144,11 +165,11 @@ class MTAirCompressorCsc(salobj.BaseCsc):
 
     async def update_analog_data(self):
         analog1 = self.client.read_holding_registers(0x1E, 1, unit=self.unit)
+        if analog1.isError():
+            raise ModbusError("Cannot read telemetry", analog1, 0x1E)
         analog2 = self.client.read_holding_registers(0x22, 14, unit=self.unit)
-        if analog1.isError() or analog2.isError():
-            raise RuntimeError(
-                f"Cannot read telemetry: 0x{analog1.function_code:02X} 0x{analog2.function_code:02X}"
-            )
+        if analog2.isError():
+            raise ModbusError("Cannot read telemetry", analog2, 0x22)
 
         await self.tel_analogData.set_write(
             force_output=True,
@@ -172,7 +193,7 @@ class MTAirCompressorCsc(salobj.BaseCsc):
     async def update_timer(self):
         timer = self.client.read_holding_registers(0x39, 8, unit=self.unit)
         if timer.isError():
-            raise RuntimeError(f"Cannot read timers: 0x{timer.function_code:02X}")
+            raise ModbusError("Cannot read timers", timer, 0x39)
 
         def to_64(a):
             return a[0] << 16 | a[1]
@@ -201,10 +222,12 @@ class MTAirCompressorCsc(salobj.BaseCsc):
                     timerUpdate = 60
                 else:
                     timerUpdate -= 1
+            except ModbusError as me:
+                self.fail(None, str(me))
+                self.first_run = True
 
             except Exception as er:
-                print("Exception", str(er))
-                traceback.print_exc()
+                self.log.exception(er)
                 self.first_run = True
 
             await asyncio.sleep(1)
