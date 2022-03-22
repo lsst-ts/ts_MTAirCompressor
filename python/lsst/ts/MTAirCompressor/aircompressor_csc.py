@@ -21,8 +21,9 @@
 
 __all__ = ["MTAirCompressorCsc"]
 
+import argparse
 import asyncio
-import traceback
+import typing
 from lsst.ts import salobj, utils
 
 # from pymodbus.client.asynchronous import schedulers
@@ -32,6 +33,7 @@ from lsst.ts import salobj, utils
 from pymodbus.client.sync import ModbusTcpClient as ModbusClient
 
 from . import __version__
+
 
 class ModbusError(RuntimeError):
     """Exception raised on modbus errors. Please note that shall be superset by
@@ -43,16 +45,23 @@ class ModbusError(RuntimeError):
     modbus_exception : `pymodbus.pdu.ExceptionResponse`
         Exception returned from Modbus function
     """
+
     def __init__(self, what, modbus_exception, address):
         if modbus_exception.original_code == 4:
-            message = f"Cannot address 0x{address:04x}: {modbus_exception.exception_code}"
+            message = (
+                f"Cannot address 0x{address:04x}: {modbus_exception.exception_code}"
+            )
         elif modbus_exception.original_code == 6:
             message = f"Cannot write register address 0x{address:04x}: {modbus_exception.exception_code}"
         else:
-            message = f"Cannot call function {modbus_exception.function_code} : {modbus_exception.exception_code}, address 0x{address:04x}"
+            message = (
+                f"Cannot call function {modbus_exception.function_code} : "
+                "{modbus_exception.exception_code}, address 0x{address:04x}"
+            )
         super().__init__(what + " " + message)
 
         self.exception = modbus_exception
+
 
 class MTAirCompressorCsc(salobj.BaseCsc):
     """AirCompressors CSC
@@ -68,12 +77,32 @@ class MTAirCompressorCsc(salobj.BaseCsc):
     def __init__(self, index):
         super().__init__(name="MTAirCompressor", index=index)
 
-        self.unit = 1
-        self.hostname = "m1m3cam-aircomp01.cp.lsst.org"
-
         self.first_run = True
         self.client = None
         self.telemetry_task = utils.make_done_future()
+
+    @classmethod
+    def add_arguments(cls, parser: argparse.ArgumentParser) -> None:
+        parser.add_argument(
+            "--hostname",
+            type=str,
+            default=None,
+            help="hostname. Unless specified, m1m3cam-aircomp0X.cp.lsst.org, where X is compressor index",
+        )
+        parser.add_argument(
+            "--unit", type=int, default=None, help="modbus unit address"
+        )
+
+    @classmethod
+    def add_kwargs_from_args(
+        self, args: argparse.Namespace, kwargs: typing.Dict[str, typing.Any]
+    ) -> None:
+        self.hostname = (
+            f"m1m3cam-aircomp{kwargs['index']:02d}.cp.lsst.org"
+            if args.hostname is None
+            else args.hostname
+        )
+        self.unit = kwargs["index"] if args.unit is None else args.unit
 
     async def do_start(self, data):
         await super().do_start(data)
@@ -102,7 +131,7 @@ class MTAirCompressorCsc(salobj.BaseCsc):
         reseted = self.client.write_register(0x12D, 0xFF01, unit=self.unit)
         if reseted.isError():
             self.fail("Cannot reset compressor")
-            raise ModbusError("Cannot reset compressor", poweredDown, 0x12B)
+            raise ModbusError("Cannot reset compressor", reseted, 0x12D)
 
     async def update_status(self):
         status = self.client.read_holding_registers(0x30, 3, unit=self.unit)
