@@ -25,15 +25,17 @@ import argparse
 import asyncio
 import typing
 from lsst.ts import salobj, utils
+from lsst.ts.salobj import base
 
 # although pymodbus supports asyncio, it's uselless to use asyncio version
-# as there isn't any extra processing which can occur while waiting for modbus data
+# as there isn't any extra processing which can occur while waiting for modbus
+# data
 from pymodbus.client.sync import ModbusTcpClient as ModbusClient
 
 from . import __version__
 
 
-class ModbusError(RuntimeError):
+class ModbusError(base.ExpectedError):
     """Exception raised on modbus errors. Please note that shall be superset by
     pymodbus solution, if it ever materialize, See:
     https://github.com/riptideio/pymodbus/issues/298
@@ -81,6 +83,7 @@ class MTAirCompressorCsc(salobj.BaseCsc):
 
     @classmethod
     def add_arguments(cls, parser: argparse.ArgumentParser) -> None:
+        """Adds custom --hostname and --unit arguments."""
         parser.add_argument(
             "--hostname",
             type=str,
@@ -95,6 +98,7 @@ class MTAirCompressorCsc(salobj.BaseCsc):
     def add_kwargs_from_args(
         self, args: argparse.Namespace, kwargs: typing.Dict[str, typing.Any]
     ) -> None:
+        """Process custom --hostname and --unit arguments."""
         self.hostname = (
             f"m1m3cam-aircomp{kwargs['index']:02d}.cp.lsst.org"
             if args.hostname is None
@@ -103,30 +107,37 @@ class MTAirCompressorCsc(salobj.BaseCsc):
         self.unit = kwargs["index"] if args.unit is None else args.unit
 
     async def do_start(self, data):
+        """Enables communication with the compressor."""
         await super().do_start(data)
         self.client = ModbusClient(host=self.hostname)
-        self.client.connect()
+        if self.client.connect() is False:
+            self.log.fault(f"Cannot establish connection to {self.hostname}")
+
         self.telemetry_task = asyncio.create_task(self.telemetry_loop())
 
     async def end_enable(self, data):
-        await super().do_enable(data)
+        """Power on compressor after switching to enable state. Raise exception
+        if compressor cannot be powered on."""
         poweredOn = self.client.write_register(0x12B, 0xFF01, unit=self.unit)
         if poweredOn.isError():
             raise ModbusError("Cannot power on compressor", poweredOn, 0x12B)
 
     async def end_disable(self, data):
+        """Power off compressor after switching to disable state."""
         poweredDown = self.client.write_register(0x12B, 0xFF00, unit=self.unit)
         if poweredDown.isError():
             raise ModbusError("Cannot power off compressor", poweredDown, 0x12B)
         self.telemetry_task.cancel()
 
     async def do_reset(self, data):
+        """Reset compressor faults."""
         reseted = self.client.write_register(0x12D, 0xFF01, unit=self.unit)
         if reseted.isError():
             self.fail("Cannot reset compressor")
             raise ModbusError("Cannot reset compressor", reseted, 0x12D)
 
     async def update_status(self):
+        """Read compressor status - 3 registers starting from address 0x30."""
         status = self.client.read_holding_registers(0x30, 3, unit=self.unit)
         if status.isError():
             raise ModbusError("Cannot read status", status, 0x30)
@@ -174,6 +185,8 @@ class MTAirCompressorCsc(salobj.BaseCsc):
         )
 
     async def update_compressor_info(self):
+        """Read compressor info - serial number and software version."""
+
         def to_string(arr):
             return "".join(map(chr, arr))
 
@@ -186,6 +199,7 @@ class MTAirCompressorCsc(salobj.BaseCsc):
         )
 
     async def update_analog_data(self):
+        """Read compressor analog (telemetry-worth) data."""
         analog1 = self.client.read_holding_registers(0x1E, 1, unit=self.unit)
         if analog1.isError():
             raise ModbusError("Cannot read telemetry", analog1, 0x1E)
@@ -213,6 +227,7 @@ class MTAirCompressorCsc(salobj.BaseCsc):
         )
 
     async def update_timer(self):
+        """Read compressors timers."""
         timer = self.client.read_holding_registers(0x39, 8, unit=self.unit)
         if timer.isError():
             raise ModbusError("Cannot read timers", timer, 0x39)
@@ -229,6 +244,7 @@ class MTAirCompressorCsc(salobj.BaseCsc):
         )
 
     async def telemetry_loop(self):
+        """Runs telemetry loop."""
         timerUpdate = 0
         while True:
             try:
