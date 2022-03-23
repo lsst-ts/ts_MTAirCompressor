@@ -1,6 +1,6 @@
-# This file is part of ts_AirCompressors.
+# This file is part of ts_MTAirCompressor.
 #
-# Developed for the LSST Data Management System.
+# Developed for the Vera Rubin Observatory Telescope and Site Systems.
 # This product includes software developed by the LSST Project
 # (https://www.lsst.org).
 # See the COPYRIGHT file at the top-level directory of this distribution
@@ -56,7 +56,7 @@ class ModbusError(RuntimeError):
         else:
             message = (
                 f"Cannot call function {modbus_exception.function_code} : "
-                "{modbus_exception.exception_code}, address 0x{address:04x}"
+                f"{modbus_exception.exception_code}, address 0x{address:04x}"
             )
         super().__init__(what + " " + message)
 
@@ -64,7 +64,7 @@ class ModbusError(RuntimeError):
 
 
 class MTAirCompressorCsc(salobj.BaseCsc):
-    """AirCompressors CSC
+    """MTAirCompressor CsC
 
     Parameters
     ----------
