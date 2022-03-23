@@ -26,10 +26,8 @@ import asyncio
 import typing
 from lsst.ts import salobj, utils
 
-# from pymodbus.client.asynchronous import schedulers
-# from pymodbus.client.asynchronous.tcp import (
-#   AsyncModbusTCPClient as ModbusClient
-# )
+# although pymodbus supports asyncio, it's uselless to use asyncio version
+# as there isn't any extra processing which can occur while waiting for modbus data
 from pymodbus.client.sync import ModbusTcpClient as ModbusClient
 
 from . import __version__
@@ -106,11 +104,6 @@ class MTAirCompressorCsc(salobj.BaseCsc):
 
     async def do_start(self, data):
         await super().do_start(data)
-        # loop, self.client = ModbusClient(
-        #    schedulers.ASYNC_IO,
-        #    host=self.hostname,
-        #    loop=asyncio.get_running_loop(),
-        # )
         self.client = ModbusClient(host=self.hostname)
         self.client.connect()
         self.telemetry_task = asyncio.create_task(self.telemetry_loop())
