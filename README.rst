@@ -1,7 +1,9 @@
-#################
-ts_AirCompressors
-#################
+##################
+ts_MTAirCompressor
+##################
 
+Communication with pneumatic air compressors.
+Collect compressors telemetry.
+Allows compressor commanding.
 
-
-.. Add a brief (few sentence) description of what this package provides.
+Assumes compressors controllers are DXL-LRS.
