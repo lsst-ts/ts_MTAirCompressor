@@ -1,16 +1,16 @@
-.. py:currentmodule:: lsst.ts.AirCompressors
+.. py:currentmodule:: lsst.ts.MTAirCompressor
 
-.. _lsst.ts.AirCompressors:
+.. _lsst.ts.MTAirCompressor:
 
-######################
-lsst.ts.AirCompressors
-######################
+#######################
+lsst.ts.MTAirCompressor
+#######################
 
 .. Paragraph that describes what this Python module does and links to related modules and frameworks.
 
-.. .. _lsst.ts.AirCompressors-using:
+.. .. _lsst.ts.MTAirCompressor-using:
 
-.. Using lsst.ts.AirCompressors
+.. Using lsst.ts.MTAirCompressor
 .. ============================
 
 .. toctree linking to topics related to using the module's APIs.
@@ -18,20 +18,20 @@ lsst.ts.AirCompressors
 .. .. toctree::
 ..    :maxdepth: 1
 
-.. _lsst.ts.AirCompressors-contributing:
+.. _lsst.ts.MTAirCompressor-contributing:
 
 Contributing
 ============
 
-``lsst.ts.AirCompressors`` is developed at https://github.com/lsst-ts/ts_AirCompressors.
-You can find Jira issues for this module under the `ts_AirCompressors <https://jira.lsstcorp.org/issues/?jql=project%20%3D%20DM%20AND%20component%20%3D%20ts_AirCompressors>`_ component.
+``lsst.ts.MTAirCompressor`` is developed at https://github.com/lsst-ts/ts_MTAirCompressor.
+You can find Jira issues for this module under the `ts_MTAirCompressor <https://jira.lsstcorp.org/issues/?jql=project%20%3D%20DM%20AND%20component%20%3D%20ts_MTAirCompressor>`_ component.
 
 .. If there are topics related to developing this module (rather than using it), link to this from a toctree placed here.
 
 .. .. toctree::
 ..    :maxdepth: 1
 
-.. .. _lsst.ts.AirCompressors-scripts:
+.. .. _lsst.ts.MTAirCompressor-scripts:
 
 .. Script reference
 .. ================
@@ -41,11 +41,11 @@ You can find Jira issues for this module under the `ts_AirCompressors <https://j
 .. .. toctree::
 ..    :maxdepth: 1
 
-.. .. _lsst.ts.AirCompressors-pyapi:
+.. .. _lsst.ts.MTAirCompressor-pyapi:
 
 Python API reference
 ====================
 
-.. automodapi:: lsst.ts.AirCompressors
+.. automodapi:: lsst.ts.MTAirCompressor
    :no-main-docstr:
    :no-inheritance-diagram:
