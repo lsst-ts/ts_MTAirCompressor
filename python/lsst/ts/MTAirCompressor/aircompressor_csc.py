@@ -70,12 +70,16 @@ class MTAirCompressorCsc(salobj.BaseCsc):
     ----------
     index : `int`
         CSC index.
+    initial_state : `lsst.ts.salobj.State`
+        CSC initial state.
     """
 
     version = __version__
 
-    def __init__(self, index):
-        super().__init__(name="MTAirCompressor", index=index)
+    def __init__(self, index, initial_state=salobj.State.STANDBY):
+        super().__init__(
+            name="MTAirCompressor", index=index, initial_state=initial_state
+        )
 
         self.first_run = True
         self.client = None
