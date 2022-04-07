@@ -33,6 +33,7 @@ from lsst.ts.salobj import base
 from pymodbus.client.sync import ModbusTcpClient as ModbusClient
 
 from . import __version__
+from .simulator import create_server
 
 
 class ModbusError(base.ExpectedError):
@@ -72,17 +73,27 @@ class MTAirCompressorCsc(salobj.BaseCsc):
         CSC index.
     initial_state : `lsst.ts.salobj.State`
         CSC initial state.
+    simulation_mode : `int`
+        CSC simulation mode. 0 - no simulation, 1 - software simulation (no mock modbus needed)
     """
 
     version = __version__
+    valid_simulation_modes: typing.Sequence[int] = (0, 1)
 
-    def __init__(self, index, initial_state=salobj.State.STANDBY):
+    def __init__(
+        self, index: int, initial_state=salobj.State.STANDBY, simulation_mode: int = 0
+    ):
         super().__init__(
-            name="MTAirCompressor", index=index, initial_state=initial_state
+            name="MTAirCompressor",
+            index=index,
+            simulation_mode=simulation_mode,
+            initial_state=initial_state,
         )
 
         self.first_run = True
         self.client = None
+        self.simulator = None
+        self.simulator_future = None
         self.telemetry_task = utils.make_done_future()
 
     @classmethod
@@ -100,22 +111,42 @@ class MTAirCompressorCsc(salobj.BaseCsc):
 
     @classmethod
     def add_kwargs_from_args(
-        self, args: argparse.Namespace, kwargs: typing.Dict[str, typing.Any]
+        cls, args: argparse.Namespace, kwargs: typing.Dict[str, typing.Any]
     ) -> None:
         """Process custom --hostname and --unit arguments."""
-        self.hostname = (
+        cls.hostname = (
             f"m1m3cam-aircomp{kwargs['index']:02d}.cp.lsst.org"
             if args.hostname is None
             else args.hostname
         )
-        self.unit = kwargs["index"] if args.unit is None else args.unit
+        cls.unit = kwargs["index"] if args.unit is None else args.unit
 
-    async def do_start(self, data):
+    async def close_tasks(self) -> None:
+        if self.simulation_mode == 1:
+            await self.simulator.shutdown()
+            await self.simulator_future.cancel()
+        await super().close_tasks()
+
+    async def begin_start(self, data):
         """Enables communication with the compressor."""
-        await super().do_start(data)
-        self.client = ModbusClient(host=self.hostname)
+        if self.simulation_mode == 1:
+            self.hostname = "localhost"
+            self.unit = 1
+
+            def run_sim():
+                self.simulator = create_server()
+                self.simulator.serve_forever()
+
+            self.simulator_future = asyncio.get_running_loop().run_in_executor(
+                None, run_sim
+            )
+            await asyncio.sleep(2)
+            self.client = ModbusClient(host="localhost", port=5020)
+        else:
+            self.client = ModbusClient(host=self.hostname)
+
         if self.client.connect() is False:
-            self.log.fault(f"Cannot establish connection to {self.hostname}")
+            self.log.error(f"Cannot establish connection to {self.hostname}")
 
         self.telemetry_task = asyncio.create_task(self.telemetry_loop())
 
@@ -135,6 +166,8 @@ class MTAirCompressorCsc(salobj.BaseCsc):
 
     async def do_reset(self, data):
         """Reset compressor faults."""
+        if self.client is None:
+            return
         reseted = self.client.write_register(0x12D, 0xFF01, unit=self.unit)
         if reseted.isError():
             self.fail("Cannot reset compressor")
