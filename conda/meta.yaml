@@ -46,3 +46,4 @@ requirements:
     - setuptools_scm
     - ts-salobj
     - ts-idl
+    - pymodbus
