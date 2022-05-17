@@ -81,7 +81,7 @@ class MTAirCompressorCsc(salobj.BaseCsc):
     valid_simulation_modes: typing.Sequence[int] = (0, 1)
 
     def __init__(
-        self, index: int, initial_state=salobj.State.STANDBY, simulation_mode: int = 0
+        self, index: int, initial_state=salobj.State.DISABLED, simulation_mode: int = 0
     ):
         super().__init__(
             name="MTAirCompressor",
@@ -176,6 +176,7 @@ class MTAirCompressorCsc(salobj.BaseCsc):
     async def update_status(self):
         """Read compressor status - 3 registers starting from address 0x30."""
         status = self.client.read_holding_registers(0x30, 3, unit=self.unit)
+        print(status, status.isError())
         if status.isError():
             raise ModbusError("Cannot read status", status, 0x30)
 
@@ -186,7 +187,7 @@ class MTAirCompressorCsc(salobj.BaseCsc):
                 value >>= 1
             return ret
 
-        self.evt_status.set(
+        await self.evt_status.set_write(
             **_statusBits(
                 (
                     "readyToStart",
@@ -204,10 +205,7 @@ class MTAirCompressorCsc(salobj.BaseCsc):
                     "maxAllowedSpeedAchieved",
                 ),
                 status.registers[0],
-            )
-        )
-        await self.evt_status.set_write(
-            force_output=self.first_run,
+            ),
             **_statusBits(
                 (
                     "startByRemote",
