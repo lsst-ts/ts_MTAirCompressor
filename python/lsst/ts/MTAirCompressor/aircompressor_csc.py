@@ -176,20 +176,12 @@ class MTAirCompressorCsc(salobj.BaseCsc):
     async def update_status(self):
         """Read compressor status - 3 registers starting from address 0x30."""
         status = self.client.read_holding_registers(0x30, 3, unit=self.unit)
-        print(status, status.isError())
         if status.isError():
             raise ModbusError("Cannot read status", status, 0x30)
 
-        def _statusBits(fields, value):
-            ret = {}
-            for f in fields:
-                ret[f] = value & 0x0001
-                value >>= 1
-            return ret
-
         await self.evt_status.set_write(
             **_statusBits(
-                (
+                [
                     "readyToStart",
                     "operating",
                     "startInhibit",
@@ -203,19 +195,110 @@ class MTAirCompressorCsc(salobj.BaseCsc):
                     "serviceRequired",
                     "minAllowedSpeedAchieved",
                     "maxAllowedSpeedAchieved",
-                ),
+                ],
                 status.registers[0],
             ),
             **_statusBits(
-                (
+                [
                     "startByRemote",
                     "startWithTimerControl",
                     "startWithPressureRequirement",
                     "startAfterDePressurise",
                     "startAfterPowerLoss",
                     "startAfterDryerPreRun",
-                ),
+                ],
                 status.registers[2],
+            ),
+        )
+
+    async def update_errorsWarnings(self):
+        """Read compressor errors and warnings - 16 registers starting from address 0x63."""
+        errorsWarnings = self.client.read_holding_registers(0x63, 16, unit=self.unit)
+        if errorsWarnings.isError():
+            raise ModbusError("Cannot read errors and warnings", errorsWarnings, 0x30)
+
+        await self.evt_errors.set_write(
+            **_statusBits(
+                [
+                    "powerSupplyFailureE400",
+                    "emergencyStopActivatedE401",
+                    "highMotorTemperatureM1E402",
+                    "compressorDischargeTemperatureE403",
+                    "startTemperatureLowE404",
+                    "dischargeOverPressureE405",
+                    "linePressureSensorB1E406",
+                    "dischargePressureSensorB2E407",
+                    "dischargeTemperatureSensorR2E408",
+                    "controllerHardwareE409",
+                    "coolingE410",
+                    "oilPressureLowE411",
+                    "externalFaultE412",
+                    "dryer413",
+                    "condensateDrainE414",
+                    "noPressureBuildUpE415",
+                ],
+                errorsWarnings.registers[0],
+            ),
+            **_statusBits(
+                ["heavyStartupE416"],
+                errorsWarnings.registers[1],
+            ),
+            **_statusBits(
+                [
+                    "preAdjustmentVSDE500",
+                    "preAdjustmentE501",
+                    "lockedVSDE502",
+                    "writeFaultVSDE503",
+                    "communicationVSDE504",
+                    "stopPressedVSDE505",
+                    "stopInputEMVSDE506",
+                    "readFaultVSDE507",
+                    "stopInputVSDEME508",
+                    "seeVSDDisplayE509",
+                    "speedBelowMinLimitE510",
+                ],
+                errorsWarnings.registers[6],
+            ),
+        )
+
+        await self.evt_warnings.set_write(
+            **_statusBits(
+                [
+                    "serviceDueA600",
+                    "dischargeOverPressureA601",
+                    "compressorDischargeTemperatureA602",
+                    None,
+                    None,
+                    None,
+                    "linePressureHighA606",
+                    "controllerBatteryEmptyA607",
+                    "dryerA608",
+                    "condensateDrainA609",
+                    "fineSeparatorA610",
+                    "airFilterA611",
+                    "oilFilterA612",
+                    "oilLevelLowA613",
+                    "oilTemperatureHighA614",
+                    "externalWarningA615",
+                ],
+                errorsWarnings.registers[8],
+            ),
+            **_statusBits(
+                [
+                    "motorLuricationSystemA616",
+                    "input1A617",
+                    "input2A618",
+                    "input3A619",
+                    "input4A620",
+                    "input5A621",
+                    "input6A622",
+                    "fullSDCardA623",
+                ],
+                errorsWarnings.registers[9],
+            ),
+            **_statusBits(
+                ["temperatureHighVSDA700"],
+                errorsWarnings.registers[14],
             ),
         )
 
@@ -284,6 +367,7 @@ class MTAirCompressorCsc(salobj.BaseCsc):
         while True:
             try:
                 await self.update_status()
+                await self.update_errorsWarnings()
                 await self.update_analog_data()
 
                 if self.first_run:
@@ -300,7 +384,29 @@ class MTAirCompressorCsc(salobj.BaseCsc):
                 self.first_run = True
 
             except Exception as er:
+                print("Exception", str(er))
                 self.log.exception(er)
                 self.first_run = True
 
             await asyncio.sleep(1)
+
+
+def _statusBits(fields, value):
+    """Helper function. Converts value bits into boolean fields.
+
+    Parameters
+    ----------
+    fields : [`str`]
+    value : `int`
+
+    Returns
+    -------
+    bits : {`str` : `bool`}
+
+    """
+    ret = {}
+    for f in fields:
+        if f is not None:
+            ret[f] = value & 0x0001
+        value >>= 1
+    return ret
