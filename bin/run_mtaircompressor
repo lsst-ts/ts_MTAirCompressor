@@ -19,6 +19,6 @@
 #
 import asyncio
 
-from lsst.ts import MTAirCompressor
+from lsst.ts.MTAirCompressor import run_MTAirCompressor
 
-asyncio.run(MTAirCompressor.MTAirCompressorCsc.amain(True))
+run_MTAirCompressor()
