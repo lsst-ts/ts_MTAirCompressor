@@ -34,6 +34,7 @@ from lsst.ts.salobj import base
 from pymodbus.client.sync import ModbusTcpClient as ModbusClient
 
 from . import __version__
+from . import enums
 from .simulator import create_server
 
 
@@ -135,12 +136,18 @@ class MTAirCompressorCsc(salobj.BaseCsc):
 
     @classmethod
     def add_arguments(cls, parser: argparse.ArgumentParser) -> None:
-        """Adds custom --hostname and --unit arguments."""
+        """Adds custom --hostname, --port and --unit arguments."""
         parser.add_argument(
             "--hostname",
             type=str,
             default=None,
             help="hostname. Unless specified, m1m3cam-aircomp0X.cp.lsst.org, where X is compressor index",
+        )
+        parser.add_argument(
+            "--port",
+            type=int,
+            default=502,
+            help="TCP/IP port. Defaults to 502 (default Modbus TCP/IP port)",
         )
         parser.add_argument(
             "--unit", type=int, default=None, help="modbus unit address"
@@ -150,12 +157,13 @@ class MTAirCompressorCsc(salobj.BaseCsc):
     def add_kwargs_from_args(
         cls, args: argparse.Namespace, kwargs: typing.Dict[str, typing.Any]
     ) -> None:
-        """Process custom --hostname and --unit arguments."""
+        """Process custom --hostname, --port and --unit arguments."""
         cls.hostname = (
             f"m1m3cam-aircomp{kwargs['index']:02d}.cp.lsst.org"
             if args.hostname is None
             else args.hostname
         )
+        cls.port = args.port
         cls.unit = kwargs["index"] if args.unit is None else args.unit
 
     async def close_tasks(self) -> None:
@@ -164,10 +172,23 @@ class MTAirCompressorCsc(salobj.BaseCsc):
             await self.simulator_future.cancel()
         await super().close_tasks()
 
+    async def _connect(self):
+        self.client = ModbusClient(host=self.hostname, port=self.port)
+
+        if self.client.connect() is False:
+            self.fault(
+                enums.CscErrorCode.COULD_NOT_CONNECT,
+                "Cannot establish connection to {self.hostname}:{self.port}",
+            )
+            return
+
+        self.telemetry_task = asyncio.create_task(self.telemetry_loop())
+
     async def begin_start(self, data):
         """Enables communication with the compressor."""
         if self.simulation_mode == 1:
             self.hostname = "localhost"
+            self.port = 5020
             self.unit = 1
 
             def run_sim():
@@ -178,28 +199,23 @@ class MTAirCompressorCsc(salobj.BaseCsc):
                 None, run_sim
             )
             await asyncio.sleep(2)
-            self.client = ModbusClient(host="localhost", port=5020)
-        else:
-            self.client = ModbusClient(host=self.hostname)
 
-        if self.client.connect() is False:
-            self.log.error(f"Cannot establish connection to {self.hostname}")
-
-        self.telemetry_task = asyncio.create_task(self.telemetry_loop())
+        await self._connect()
 
     async def end_enable(self, data):
         """Power on compressor after switching to enable state. Raise exception
         if compressor cannot be powered on."""
+        if self._ready_to_start is False:
+            return
+
         poweredOn = self.client.write_register(
             Registers.REMOTE_CMD, 0xFF01, unit=self.unit
         )
         if poweredOn.isError():
-            raise ModbusError(
-                "Cannot power on compressor", poweredOn, Registers.REMOTE_CMD
-            )
+            await self.fault(poweredOn.original_code, "Cannot power on compressor")
 
-    async def end_disable(self, data):
-        """Power off compressor after switching to disable state."""
+    async def begin_disable(self, data):
+        """Power off compressor before switching to disable state."""
         poweredDown = self.client.write_register(
             Registers.REMOTE_CMD, 0xFF00, unit=self.unit
         )
@@ -207,7 +223,6 @@ class MTAirCompressorCsc(salobj.BaseCsc):
             raise ModbusError(
                 "Cannot power off compressor", poweredDown, Registers.REMOTE_CMD
             )
-        self.telemetry_task.cancel()
 
     async def do_reset(self, data):
         """Reset compressor faults."""
@@ -215,8 +230,7 @@ class MTAirCompressorCsc(salobj.BaseCsc):
             return
         reseted = self.client.write_register(Registers.RESET, 0xFF01, unit=self.unit)
         if reseted.isError():
-            self.fail("Cannot reset compressor")
-            raise ModbusError("Cannot reset compressor", reseted, Registers.RESET)
+            await self.fault(reseted.original_code, "Cannot reset compressor")
 
     async def update_status(self):
         """Read compressor status - 3 status registers starting from address 0x30."""
@@ -255,6 +269,17 @@ class MTAirCompressorCsc(salobj.BaseCsc):
                 status.registers[2],
             ),
         )
+
+        self._ready_to_start = status.registers[0] & 0x01 == 0x01
+        self._operating = status.registers[0] & 0x02 == 0x02
+
+        if self._operating:
+            # None can be passed, as begin_enable and begin_disable called from _do_change_state don't care about its content
+            if self.summary_state != salobj.State.ENABLED:
+                await self.do_enable(None)
+        else:
+            if self.summary_state != salobj.State.DISABLED:
+                await self.do_disable(None)
 
     async def update_errorsWarnings(self):
         """Read compressor errors and warnings - 16 registers starting from address 0x63."""
@@ -443,12 +468,11 @@ class MTAirCompressorCsc(salobj.BaseCsc):
                 else:
                     timerUpdate -= 1
             except ModbusError as me:
-                self.fail(None, str(me))
+                await self.fault(1, str(me))
                 self.first_run = True
 
             except Exception as er:
-                print("Exception", str(er))
-                self.log.exception(er)
+                await self.fault(1, str(er))
                 self.first_run = True
 
             await asyncio.sleep(1)
