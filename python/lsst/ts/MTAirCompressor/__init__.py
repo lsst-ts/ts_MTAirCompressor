@@ -25,3 +25,4 @@ except ImportError:
     __version__ = "?"
 
 from .aircompressor_csc import *
+from .aircompressor_model import *
