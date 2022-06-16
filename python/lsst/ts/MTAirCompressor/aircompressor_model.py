@@ -27,8 +27,7 @@ import enum
 # as there isn't any extra processing which can occur while waiting for modbus
 # data
 from pymodbus.client.sync import ModbusTcpClient as ModbusClient
-
-from .enums import ErrorCode
+import pymodbus.exceptions
 
 
 # Address of registers of interest. Please see Delcos XL documentation for details
@@ -74,22 +73,22 @@ class ModbusError(RuntimeError):
 
     Parameters
     ----------
-    code : `int`
-        ModBus error code
+    modbusException : `pymodbus.exception.ModbusException`
+        ModBus orignal exception
     message : `str`
         Message associated with the error
     """
 
-    def __init__(self, code, message):
-        self.code = code
+    def __init__(self, modbusException, message=""):
+        self.exception = modbusException
         self.message = message
 
 
 class MTAirCompressorModel(ModbusClient):
     """Model for compressor. Handles compressor communication. Throws
     ModbusError on errors, overcoming PyModbus deficiency to do so. It doesn't
-    manage Modbus addresses - address/unit parameter needs to be added to all
-    calls, similarly to ModbusClient.
+    manage Modbus addresses - unit parameter needs to be added to all calls,
+    similarly as in ModbusClient.
 
     Parameters
     ----------
@@ -106,15 +105,16 @@ class MTAirCompressorModel(ModbusClient):
         ret = super().connect()
         if ret is False:
             raise ModbusError(
-                ErrorCode.COULD_NOT_CONNECT,
-                "Cannot establish connectiont to {self.host}:{self.port}",
+                pymodbus.exceptions.ConnectionException(
+                    f"Cannot establish connectiont to {self.host}:{self.port}"
+                )
             )
         return ret
 
     def set_register(self, address, value, unit, error_status):
         response = self.write_register(address, value, unit=unit)
         if response.isError():
-            raise ModbusError(response.original_code, error_status)
+            raise ModbusError(response, error_status)
         return response
 
     def reset(self, unit):
@@ -135,7 +135,7 @@ class MTAirCompressorModel(ModbusClient):
     def get_registers(self, address, count, unit, error_status):
         status = self.read_holding_registers(address, count, unit=unit)
         if status.isError():
-            raise ModbusError(status.original_code, error_status)
+            raise ModbusError(status, error_status)
         return status.registers
 
     def get_status(self, unit):
