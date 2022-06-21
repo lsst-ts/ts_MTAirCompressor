@@ -106,7 +106,7 @@ class MTAirCompressorModel(ModbusClient):
         if ret is False:
             raise ModbusError(
                 pymodbus.exceptions.ConnectionException(
-                    f"Cannot establish connectiont to {self.host}:{self.port}"
+                    f"Cannot establish connection to {self.host}:{self.port}"
                 )
             )
         return ret

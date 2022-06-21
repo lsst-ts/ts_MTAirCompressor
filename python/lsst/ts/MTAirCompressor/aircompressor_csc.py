@@ -23,26 +23,35 @@ __all__ = ["MTAirCompressorCsc"]
 
 import argparse
 import asyncio
+from time import monotonic
 import typing
 import pymodbus.exceptions
 
-from lsst.ts import salobj
+from lsst.ts import salobj, utils
 
 from . import __version__
-from .enums import ErrorCode
 from .aircompressor_model import MTAirCompressorModel, ModbusError
+from .config_schema import CONFIG_SCHEMA
+from .enums import ErrorCode
 from .simulator import create_server
 
 
-class MTAirCompressorCsc(salobj.BaseCsc):
+class MTAirCompressorCsc(salobj.ConfigurableCsc):
     """MTAirCompressor CsC
 
     Parameters
     ----------
     index : `int`
         CSC index.
+    config_dir : `str` (optional)
+        Directory of configuration files, or None for the standard
+        configuration directory (obtained from `get_default_config_dir`).
+        This is provided for unit testing.
     initial_state : `lsst.ts.salobj.State`
         CSC initial state.
+    override : `str`, optional
+        Configuration override file to apply if ``initial_state`` is
+        `State.DISABLED` or `State.ENABLED`.
     simulation_mode : `int`
         CSC simulation mode. 0 - no simulation, 1 - software simulation (no mock modbus needed)
     """
@@ -51,24 +60,32 @@ class MTAirCompressorCsc(salobj.BaseCsc):
     valid_simulation_modes: typing.Sequence[int] = (0, 1)
 
     def __init__(
-        self, index: int, initial_state=salobj.State.DISABLED, simulation_mode: int = 0
+        self,
+        index: int,
+        config_dir: str = None,
+        initial_state=salobj.State.DISABLED,
+        override: str = "",
+        simulation_mode: int = 0,
     ):
         super().__init__(
             name="MTAirCompressor",
             index=index,
-            simulation_mode=simulation_mode,
+            config_schema=CONFIG_SCHEMA,
+            config_dir=config_dir,
             initial_state=initial_state,
+            override=override,
+            simulation_mode=simulation_mode,
         )
 
         self.first_run = True
         self.model = None
         self.simulator = None
         self.simulator_future = None
-        self._last_fault = None
         self._start_by_remote = False
         self._status_update = False
+        self._failed_time = None
 
-        self.poll_task = asyncio.create_task(self.poll_loop())
+        self.poll_task = utils.make_done_future()
 
     @classmethod
     def add_arguments(cls, parser: argparse.ArgumentParser) -> None:
@@ -102,13 +119,38 @@ class MTAirCompressorCsc(salobj.BaseCsc):
         cls.port = args.port
         cls.unit = kwargs["index"] if args.unit is None else args.unit
 
+    async def configure(self, config):
+        self.config = config
+
+    @staticmethod
+    def get_config_pkg():
+        return "ts_config_mttcs"
+
     async def close_tasks(self) -> None:
+        await super().close_tasks()
         if self.simulation_mode == 1:
             await self.simulator.shutdown()
             await self.simulator_future.cancel()
-        await super().close_tasks()
+        self.poll_task.cancel()
+        await self.disconnect()
 
-    async def log_modbus_error(self, modbus_error, msg=""):
+    async def log_modbus_error(self, modbus_error, msg="", ignore_timeouts=False):
+        await self.disconnect()
+
+        if ignore_timeouts is False:
+            if self.summary_state != salobj.State.FAULT and (
+                self._failed_time is None
+                or monotonic() < self._failed_time + self.config.grace_period
+            ):
+                self.log.error(str(modbus_error))
+                if self._failed_time is None:
+                    self.log.warning(
+                        "Lost compressor connection, will try to reconnect for"
+                        f" {self.config.grace_period} seconds"
+                    )
+                    self._failed_time = monotonic()
+                return
+
         try:
             await self.fault(modbus_error.exception.original_code, msg)
         except AttributeError:
@@ -119,9 +161,20 @@ class MTAirCompressorCsc(salobj.BaseCsc):
             else:
                 await self.fault(ErrorCode.MODBUS_ERROR, msg + str(modbus_error))
 
-        self._last_fault = modbus_error.exception
+        self._failed_time = None
 
-    async def begin_start(self, data):
+    async def connect(self):
+        if self.model is None:
+            self.model = MTAirCompressorModel(self.hostname, self.port)
+        self.model.connect()
+        await self.evt_connectionStatus.set_write(connected=True)
+        self.log.debug(f"Connected to {self.hostname}:{self.port}")
+
+    async def disconnect(self):
+        await self.evt_connectionStatus.set_write(connected=False)
+        self.model.close()
+
+    async def end_start(self, data):
         """Enables communication with the compressor."""
         if self.simulation_mode == 1:
             self.hostname = "localhost"
@@ -137,17 +190,13 @@ class MTAirCompressorCsc(salobj.BaseCsc):
             )
             await asyncio.sleep(2)
 
-        if self.model is None:
-            try:
-                self.model = MTAirCompressorModel(self.hostname, self.port)
-                self.model.connect()
-            except ModbusError as er:
-                await self.log_modbus_error(er, "Starting up:")
-                return
-
-        if self.poll_task.done():
-            self.poll_task = asyncio.create_task(self.telemetry_loop())
-        self.log.debug(f"Connected to {self.hostname}:{self.port}")
+        try:
+            await self.connect()
+            if self.poll_task.done():
+                self.poll_task = asyncio.create_task(self.poll_loop())
+        except ModbusError as er:
+            await self.log_modbus_error(er, "Starting up:", True)
+            return
 
     async def end_enable(self, data):
         """Power on compressor after switching to enable state. Raise exception
@@ -408,33 +457,34 @@ class MTAirCompressorCsc(salobj.BaseCsc):
     async def poll_loop(self):
         while True:
             try:
-                if self.disabled_or_enabled:
-                    await self.telemetry_loop()
-                elif self.summary_state == salobj.State.FAULT:
+                if self._failed_time is not None:
                     if self.model is not None:
                         try:
+                            await self.connect()
                             self.model.get_status(self.unit)
+                            self.log.info(
+                                "Compressor connection is back after "
+                                f"{monotonic() - self._failed_time:.1f} seconds"
+                            )
+                            self._failed_time = None
                         except ModbusError as er:
-                            # this might be other warning than the one causing fault
-                            if not (isinstance(self._last_fault, type(er.exception))):
-                                self.log.error(str(er))
+                            await self.log_modbus_error(er, "While reconnecting:")
                             await asyncio.sleep(5)
                             continue
-
-                        # if connection is back, recover
-                        self.log.debug("Recovering from fault")
-                        await self.do_standby(None)
-                        await self.do_start(None)
-                        self.log.info("Recovered from fault")
-                elif self.summary_state == salobj.State.STANDBY:
+                elif self.disabled_or_enabled:
+                    await self.telemetry_loop()
+                elif self.summary_state in (salobj.State.STANDBY, salobj.State.FAULT):
                     pass
                 else:
                     self.log.critical(f"Unhandled state: {self.summary_state}")
 
-                await asyncio.sleep(0.1)
+                await asyncio.sleep(1)
             except Exception as ex:
-                self.log.exception(f"exception in poll loop: {str(ex)}")
+                self.log.exception(f"Exception in poll loop: {str(ex)}")
                 await asyncio.sleep(2)
+
+            if self.summary_state == salobj.State.FAULT:
+                raise RuntimeError("In FAULT state")
 
 
 def _statusBits(fields, value):
