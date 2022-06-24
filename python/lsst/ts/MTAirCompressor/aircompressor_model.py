@@ -23,14 +23,9 @@ __all__ = ["ModbusError", "MTAirCompressorModel"]
 
 import enum
 
-# although pymodbus supports asyncio, it's uselless to use asyncio version
-# as there isn't any extra processing which can occur while waiting for modbus
-# data
-from pymodbus.client.sync import ModbusTcpClient as ModbusClient
-import pymodbus.exceptions
 
-
-# Address of registers of interest. Please see Delcos XL documentation for details
+# Address of registers of interest. Please see Delcos XL documentation for details.
+# https://confluence.lsstcorp.org/display/LTS/Datasheets (you need LSST login)
 class Registers(enum.IntEnum):
     # telemetry block
     WATER_LEVEL = 0x1E
@@ -50,7 +45,7 @@ class Registers(enum.IntEnum):
     LINE_PRESSURE = 0x2E
     STAGE_1_OUTPUT_TEMPERATURE = 0x2F
 
-    RUNNIG_HOURS = 0x39  # 64bit, 2 registers
+    RUNNING_HOURS = 0x39  # 64bit, 2 registers
     LOADED_HOURS = 0x3B  # 64 bit, 2 registers
     LOWEST_SERVICE_COUNTER = 0x3C
     RUN_ON_TIMER = 0x3D
@@ -67,7 +62,7 @@ class Registers(enum.IntEnum):
 
 
 class ModbusError(RuntimeError):
-    """Exception raised on modbus errors. Please note that shall be superset by
+    """Exception raised on modbus errors. Please note that shall be superseded by
     pymodbus solution, if it ever materialize, See:
     https://github.com/riptideio/pymodbus/issues/298
 
@@ -80,84 +75,191 @@ class ModbusError(RuntimeError):
     """
 
     def __init__(self, modbusException, message=""):
+        super().__init__(message)
         self.exception = modbusException
-        self.message = message
 
 
-class MTAirCompressorModel(ModbusClient):
-    """Model for compressor. Handles compressor communication. Throws
-    ModbusError on errors, overcoming PyModbus deficiency to do so. It doesn't
-    manage Modbus addresses - unit parameter needs to be added to all calls,
-    similarly as in ModbusClient.
+class MTAirCompressorModel:
+    """Model for compressor.
+
+    Handles compressor communication. Throws ModbusError on errors, overcoming
+    PyModbus deficiency to do so.
 
     Parameters
     ----------
-    hostname : `str`
-        ModBus hostname.
-    port : `int`, optional
-        ModBus port.
+    connection : `ModbusClient`
+        Connection to compresor controller.
+    unit : `int`
+        Compressor unit (address on modbus).
     """
 
-    def __init__(self, hostname, port=502):
-        super().__init__(host=hostname, port=port)
+    def __init__(self, connection, unit):
+        self.connection = connection
+        self.unit = unit
 
-    def connect(self):
-        ret = super().connect()
-        if ret is False:
-            raise ModbusError(
-                pymodbus.exceptions.ConnectionException(
-                    f"Cannot establish connection to {self.host}:{self.port}"
-                )
-            )
-        return ret
+    def set_register(self, address, value, error_status):
+        """Set ModBus register value.
 
-    def set_register(self, address, value, unit, error_status):
-        response = self.write_registers(address, [value], unit=unit)
+        Parameters
+        ----------
+        address : `int(0xffff)`
+            Address of register to be set.
+        value : `int(0xffff)`
+            New register value (16-bit integer).
+
+        Returns
+        -------
+        response : `class`
+            PyModbus response to call.
+
+        Raises
+        ------
+        ModbusError
+            When register cannot be set.
+        """
+        response = self.connection.write_registers(address, [value], unit=self.unit)
         if response.isError():
             raise ModbusError(response, error_status)
         return response
 
-    def reset(self, unit):
+    def reset(self):
+        """Reset compressor errors.
+
+        Returns
+        -------
+        response : `class`
+            PyModbus response to call to set reset register.
+
+        Raises
+        ------
+        ModbusError
+            When reset cannot be performed.
+        """
+        return self.set_register(Registers.RESET, 0xFF01, "Cannot reset compressor")
+
+    def power_on(self):
+        """Power on compressor.
+
+        Returns
+        -------
+        response : `class`
+            PyModbus response to call to power on compressor.
+
+        Raises
+        ------
+        ModbusError
+            When compressor cannot be powered on. That includes power not
+            configured to operate remotely - original_code in return then
+            equals 16.
+        """
         return self.set_register(
-            Registers.RESET, 0xFF01, unit, "Cannot reset compressor"
+            Registers.REMOTE_CMD, 0xFF01, "Cannot power on compressor"
         )
 
-    def power_on(self, unit):
+    def power_off(self):
+        """Power off compressor.
+
+        Returns
+        -------
+        response : `class`
+            PyModbus response to call to power off compressor.
+
+        Raises
+        ------
+        ModbusError
+            When compressor cannot be powered off. That includes power not
+            configured to operate remotely - original_code in return then
+            equals 16.
+        """
         return self.set_register(
-            Registers.REMOTE_CMD, 0xFF01, unit, "Cannot power on compressor"
+            Registers.REMOTE_CMD, 0xFF00, "Cannot power down compressor"
         )
 
-    def power_off(self, unit):
-        return self.set_register(
-            Registers.REMOTE_CMD, 0xFF00, unit, "Cannot power down compressor"
-        )
+    def get_registers(self, address, count, error_status):
+        """
+        Returns registers.
 
-    def get_registers(self, address, count, unit, error_status):
-        status = self.read_holding_registers(address, count, unit=unit)
+        Parameters
+        ----------
+        address : `int`
+            Register address.
+        count : `int`
+            Number of registers to read.
+        error_status : `str`
+            Error status to fill in ModbusError raised on error.
+
+        Raises
+        ------
+        ModbusError
+            When register(s) cannot be retrieved.
+        """
+        status = self.connection.read_holding_registers(address, count, unit=self.unit)
         if status.isError():
             raise ModbusError(status, error_status)
         return status.registers
 
-    def get_status(self, unit):
-        """Read compressor status - 3 status registers starting from address 0x30."""
-        return self.get_registers(Registers.STATUS, 3, unit, "Cannot read status")
+    def get_status(self):
+        """Read compressor status - 3 status registers starting from address 0x30.
 
-    def get_error_registers(self, unit):
+        Raises
+        ------
+        ModbusError
+            When registers cannot be retrieved.
+        """
+        return self.get_registers(Registers.STATUS, 3, "Cannot read status")
+
+    def get_error_registers(self):
+        """Read compressor errors - 16 registers starting from address 0x63.
+
+        Those are E4xx and A6xx registers, all bit masked. Please see Delcos
+        manual for details.
+
+        Raises
+        ------
+        ModbusError
+            When registers cannot be retrieved.
+        """
         return self.get_registers(
-            Registers.ERROR_E400, 16, unit, "Cannot read error registers"
+            Registers.ERROR_E400, 16, "Cannot read error registers"
         )
 
-    def get_compressor_info(self, unit):
+    def get_compressor_info(self):
+        """Read compressor info - 23 registers starting from address 0x63.
+
+        Includes software version and serial number.
+
+        Raises
+        ------
+        ModbusError
+            When registers cannot be retrieved.
+        """
         return self.get_registers(
-            Registers.SOFTWARE_VERSION, 23, unit, "Cannot read compressor info"
+            Registers.SOFTWARE_VERSION, 23, "Cannot read compressor info"
         )
 
-    def get_analog_data(self, unit):
-        return self.get_registers(
-            Registers.WATER_LEVEL, 1, unit, "Cannot read water level"
-        ) + self.get_registers(
-            Registers.TARGET_SPEED, 14, unit, "Cannot read analog data"
-        )
+    def get_analog_data(self):
+        """Read compressor info - register 0x1E and 14 registers starting from address 0x22.
 
-    def get_timers(self, unit):
-        return self.get_registers(Registers.RUNNIG_HOURS, 8, unit, "Cannot read timers")
+        Those form compressor telemetry - includes various measurements. See
+        Registers and Delcos manual for indices.
+
+        Raises
+        ------
+        ModbusError
+            When registers cannot be retrieved.
+        """
+        return self.get_registers(
+            Registers.WATER_LEVEL, 1, "Cannot read water level"
+        ) + self.get_registers(Registers.TARGET_SPEED, 14, "Cannot read analog data")
+
+    def get_timers(self):
+        """Read compressor timers - 8 registers starting from address 0x39.
+
+        Those form compressor running hours etc.
+
+        Raises
+        ------
+        ModbusError
+            When registers cannot be retrieved.
+        """
+        return self.get_registers(Registers.RUNNING_HOURS, 8, "Cannot read timers")
