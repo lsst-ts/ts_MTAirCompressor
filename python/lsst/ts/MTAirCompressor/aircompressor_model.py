@@ -21,12 +21,14 @@
 
 __all__ = ["ModbusError", "MTAirCompressorModel"]
 
+from asyncio.exceptions import TimeoutError
 import enum
+from pymodbus.exceptions import TimeOutException
 
 
 # Address of registers of interest. Please see Delcos XL documentation for details.
 # https://confluence.lsstcorp.org/display/LTS/Datasheets (you need LSST login)
-class Registers(enum.IntEnum):
+class Register(enum.IntEnum):
     # telemetry block
     WATER_LEVEL = 0x1E
 
@@ -97,7 +99,7 @@ class MTAirCompressorModel:
         self.connection = connection
         self.unit = unit
 
-    def set_register(self, address, value, error_status):
+    async def set_register(self, address, value, error_status):
         """Set ModBus register value.
 
         Parameters
@@ -106,6 +108,8 @@ class MTAirCompressorModel:
             Address of register to be set.
         value : `int(0xffff)`
             New register value (16-bit integer).
+        error_status : `str`
+            Error status to fill in ModbusError raised on error.
 
         Returns
         -------
@@ -117,12 +121,20 @@ class MTAirCompressorModel:
         ModbusError
             When register cannot be set.
         """
-        response = self.connection.write_registers(address, [value], unit=self.unit)
+        try:
+            response = await self.connection.write_registers(
+                address, [value], unit=self.unit
+            )
+        except TimeoutError:
+            raise ModbusError(
+                TimeOutException(f"when setting register {address}"), error_status
+            )
+
         if response.isError():
             raise ModbusError(response, error_status)
         return response
 
-    def reset(self):
+    async def reset(self):
         """Reset compressor errors.
 
         Returns
@@ -135,9 +147,11 @@ class MTAirCompressorModel:
         ModbusError
             When reset cannot be performed.
         """
-        return self.set_register(Registers.RESET, 0xFF01, "Cannot reset compressor")
+        return await self.set_register(
+            Register.RESET, 0xFF01, "Cannot reset compressor"
+        )
 
-    def power_on(self):
+    async def power_on(self):
         """Power on compressor.
 
         Returns
@@ -152,11 +166,11 @@ class MTAirCompressorModel:
             configured to operate remotely - original_code in return then
             equals 16.
         """
-        return self.set_register(
-            Registers.REMOTE_CMD, 0xFF01, "Cannot power on compressor"
+        return await self.set_register(
+            Register.REMOTE_CMD, 0xFF01, "Cannot power on compressor"
         )
 
-    def power_off(self):
+    async def power_off(self):
         """Power off compressor.
 
         Returns
@@ -171,11 +185,11 @@ class MTAirCompressorModel:
             configured to operate remotely - original_code in return then
             equals 16.
         """
-        return self.set_register(
-            Registers.REMOTE_CMD, 0xFF00, "Cannot power down compressor"
+        return await self.set_register(
+            Register.REMOTE_CMD, 0xFF00, "Cannot power down compressor"
         )
 
-    def get_registers(self, address, count, error_status):
+    async def get_registers(self, address, count, error_status):
         """
         Returns registers.
 
@@ -193,12 +207,20 @@ class MTAirCompressorModel:
         ModbusError
             When register(s) cannot be retrieved.
         """
-        status = self.connection.read_holding_registers(address, count, unit=self.unit)
+        try:
+            status = await self.connection.read_holding_registers(
+                address, count, unit=self.unit
+            )
+        except TimeoutError:
+            raise ModbusError(
+                TimeOutException(f"when setting register {address}"), error_status
+            )
+
         if status.isError():
             raise ModbusError(status, error_status)
         return status.registers
 
-    def get_status(self):
+    async def get_status(self):
         """Read compressor status - 3 status registers starting from address 0x30.
 
         Raises
@@ -206,9 +228,9 @@ class MTAirCompressorModel:
         ModbusError
             When registers cannot be retrieved.
         """
-        return self.get_registers(Registers.STATUS, 3, "Cannot read status")
+        return await self.get_registers(Register.STATUS, 3, "Cannot read status")
 
-    def get_error_registers(self):
+    async def get_error_registers(self):
         """Read compressor errors - 16 registers starting from address 0x63.
 
         Those are E4xx and A6xx registers, all bit masked. Please see Delcos
@@ -219,11 +241,11 @@ class MTAirCompressorModel:
         ModbusError
             When registers cannot be retrieved.
         """
-        return self.get_registers(
-            Registers.ERROR_E400, 16, "Cannot read error registers"
+        return await self.get_registers(
+            Register.ERROR_E400, 16, "Cannot read error registers"
         )
 
-    def get_compressor_info(self):
+    async def get_compressor_info(self):
         """Read compressor info - 23 registers starting from address 0x63.
 
         Includes software version and serial number.
@@ -233,26 +255,28 @@ class MTAirCompressorModel:
         ModbusError
             When registers cannot be retrieved.
         """
-        return self.get_registers(
-            Registers.SOFTWARE_VERSION, 23, "Cannot read compressor info"
+        return await self.get_registers(
+            Register.SOFTWARE_VERSION, 23, "Cannot read compressor info"
         )
 
-    def get_analog_data(self):
+    async def get_analog_data(self):
         """Read compressor info - register 0x1E and 14 registers starting from address 0x22.
 
         Those form compressor telemetry - includes various measurements. See
-        Registers and Delcos manual for indices.
+        Register and Delcos manual for indices.
 
         Raises
         ------
         ModbusError
             When registers cannot be retrieved.
         """
-        return self.get_registers(
-            Registers.WATER_LEVEL, 1, "Cannot read water level"
-        ) + self.get_registers(Registers.TARGET_SPEED, 14, "Cannot read analog data")
+        return await self.get_registers(
+            Register.WATER_LEVEL, 1, "Cannot read water level"
+        ) + await self.get_registers(
+            Register.TARGET_SPEED, 14, "Cannot read analog data"
+        )
 
-    def get_timers(self):
+    async def get_timers(self):
         """Read compressor timers - 8 registers starting from address 0x39.
 
         Those form compressor running hours etc.
@@ -262,4 +286,4 @@ class MTAirCompressorModel:
         ModbusError
             When registers cannot be retrieved.
         """
-        return self.get_registers(Registers.RUNNING_HOURS, 8, "Cannot read timers")
+        return await self.get_registers(Register.RUNNING_HOURS, 8, "Cannot read timers")
