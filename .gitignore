@@ -1,5 +1,5 @@
 .sconsign.dblite
-config.log
+*.log
 .sconf_temp
 *.o
 *.os
@@ -18,3 +18,4 @@ pytest_session.txt
 .cache/
 .pytest_cache
 .coverage
+*.egg-info/
