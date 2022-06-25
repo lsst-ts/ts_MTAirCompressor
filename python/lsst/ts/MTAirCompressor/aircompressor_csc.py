@@ -19,7 +19,7 @@
 # You should have received a copy of the GNU General Public License
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-__all__ = ["MTAirCompressorCsc"]
+__all__ = ["MTAirCompressorCsc", "run_mtaircompressor"]
 
 import argparse
 import asyncio
@@ -484,3 +484,8 @@ def _statusBits(fields, value):
             ret[f] = value & 0x0001
         value >>= 1
     return ret
+
+
+def run_mtaircompressor() -> None:
+    """Run the MTAirCompressor CSC."""
+    asyncio.run(MTAirCompressorCsc.amain(True))
