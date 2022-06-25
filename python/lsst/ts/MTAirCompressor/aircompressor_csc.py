@@ -76,14 +76,16 @@ class MTAirCompressorCsc(salobj.BaseCsc):
         self.model = None
         self.simulator = None
         self.simulator_task = utils.make_done_future()
-        # True if compressor can be started remotely. Used before start command is issued
-        # to clearly indicate the problem
+        # True if compressor can be started remotely. Used before start command
+        # is issued to clearly indicate the problem
         self._start_by_remote: bool = False
-        # If True, status update is in progress. TODO Will be deprecated and removed in DM-35280
+        # If True, status update is in progress.
+        # TODO Will be deprecated and removed in DM-35280
         self._status_update: bool = False
-        # This will be reseted to None only after connection is properly re-established.
-        # Don't reset it in def connect, as it is needed in poll_loop to report time waiting
-        # for reconnection. None when not failed, TAI when failure was firstly detected
+        # This will be reseted to None only after connection is properly
+        # re-established.  Don't reset it in def connect, as it is needed in
+        # poll_loop to report time waiting for reconnection. None when not
+        # failed, TAI when failure was firstly detected
         self._failed_tai: float = None
 
         self.poll_task = utils.make_done_future()
@@ -206,8 +208,8 @@ class MTAirCompressorCsc(salobj.BaseCsc):
     async def end_enable(self, data):
         """Power on compressor after switching to enable state.
 
-        Raise exception if compressor cannot be powered on. Ignore state transition triggered
-        by auto update.
+        Raise exception if compressor cannot be powered on. Ignore state
+        transition triggered by auto update.
 
         Raises
         ------
@@ -256,7 +258,8 @@ class MTAirCompressorCsc(salobj.BaseCsc):
         self.model.reset()
 
     async def update_status(self):
-        """Read compressor status - 3 status registers starting from address 0x30."""
+        """Read compressor status - 3 status registers starting from address
+        0x30."""
         status = self.model.get_status()
 
         await self.evt_status.set_write(

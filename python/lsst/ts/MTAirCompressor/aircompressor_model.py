@@ -28,7 +28,8 @@ class Register(enum.IntEnum):
     """Address of registers of interest.
 
     Please see Delcos XL documentation for details.
-    https://confluence.lsstcorp.org/display/LTS/Datasheets (you need LSST login)
+    https://confluence.lsstcorp.org/display/LTS/Datasheets (you need LSST
+    login)
     """
 
     # telemetry block
@@ -66,8 +67,8 @@ class Register(enum.IntEnum):
 
 
 class ModbusError(RuntimeError):
-    """Exception raised on modbus errors. Please note that shall be superseded by
-    pymodbus solution, if it ever materialize, See:
+    """Exception raised on modbus errors. Please note that shall be superseded
+    by pymodbus solution, if it ever materialize, See:
     https://github.com/riptideio/pymodbus/issues/298
 
     Parameters
@@ -208,7 +209,8 @@ class MTAirCompressorModel:
         return status.registers
 
     def get_status(self):
-        """Read compressor status - 3 status registers starting from address 0x30.
+        """Read compressor status - 3 status registers starting from address
+        0x30.
 
         Raises
         ------
@@ -247,7 +249,8 @@ class MTAirCompressorModel:
         )
 
     def get_analog_data(self):
-        """Read compressor info - register 0x1E and 14 registers starting from address 0x22.
+        """Read compressor info - register 0x1E and 14 registers starting from
+        address 0x22.
 
         Those form compressor telemetry - includes various measurements. See
         Register and Delcos manual for indices.
