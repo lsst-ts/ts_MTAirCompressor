@@ -37,7 +37,8 @@ from . import __version__
 from .simulator import create_server
 
 
-# Address of registers of interest. Please see Delcos XL documentation for details
+# Address of registers of interest. Please see Delcos XL documentation for
+# details
 class Registers(enum.IntEnum):
     # telemetry block
     WATER_LEVEL = 0x1E
@@ -111,7 +112,8 @@ class MTAirCompressorCsc(salobj.BaseCsc):
     initial_state : `lsst.ts.salobj.State`
         CSC initial state.
     simulation_mode : `int`
-        CSC simulation mode. 0 - no simulation, 1 - software simulation (no mock modbus needed)
+        CSC simulation mode. 0 - no simulation, 1 - software simulation (no
+        mock modbus needed).
     """
 
     version = __version__
@@ -219,7 +221,9 @@ class MTAirCompressorCsc(salobj.BaseCsc):
             raise ModbusError("Cannot reset compressor", reseted, Registers.RESET)
 
     async def update_status(self):
-        """Read compressor status - 3 status registers starting from address 0x30."""
+        """Read compressor status - 3 status registers starting from address
+        0x30.
+        """
         status = self.client.read_holding_registers(Registers.STATUS, 3, unit=self.unit)
         if status.isError():
             raise ModbusError("Cannot read status", status, Registers.STATUS)
@@ -257,7 +261,9 @@ class MTAirCompressorCsc(salobj.BaseCsc):
         )
 
     async def update_errorsWarnings(self):
-        """Read compressor errors and warnings - 16 registers starting from address 0x63."""
+        """Read compressor errors and warnings - 16 registers starting from
+        address 0x63.
+        """
         errorsWarnings = self.client.read_holding_registers(
             Registers.ERROR_E400, 16, unit=self.unit
         )
