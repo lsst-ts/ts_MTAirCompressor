@@ -50,7 +50,8 @@ class MTAirCompressorCsc(salobj.BaseCsc):
     initial_state : `lsst.ts.salobj.State`
         CSC initial state.
     simulation_mode : `int`
-        CSC simulation mode. 0 - no simulation, 1 - software simulation (no mock modbus needed)
+        CSC simulation mode. 0 - no simulation, 1 - software simulation (no
+        mock modbus needed).
     """
 
     version = __version__
