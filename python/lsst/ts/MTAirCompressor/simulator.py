@@ -40,4 +40,4 @@ def create_server():
     store = ModbusSlaveContext(hr=ModbusSequentialDataBlock(0, [47] * 0xA000))
     context = ModbusServerContext(slaves=store, single=True)
 
-    return ModbusTcpServer(context, address=("localhost", 5020))
+    return ModbusTcpServer(context, address=("localhost", 0))

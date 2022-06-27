@@ -178,11 +178,14 @@ class MTAirCompressorCsc(salobj.BaseCsc):
         """Enables communication with the compressor."""
         if self.simulation_mode == 1:
             self.hostname = "localhost"
-            self.port = 5020
             self.unit = 1
 
             def run_sim():
+                # Returned ModbusTcpServer is subclass of socketserver.ThreaingTCPServer
+                # socketserver.ThreaingTCPServer stores address and host in
+                # server_address local variable.
                 self.simulator = create_server()
+                self.host, self.port = self.simulator.server_address
                 self.simulator.serve_forever()
 
             self.simulator_future = asyncio.get_running_loop().run_in_executor(
