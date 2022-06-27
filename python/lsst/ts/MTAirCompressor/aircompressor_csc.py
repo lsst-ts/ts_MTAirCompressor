@@ -27,7 +27,8 @@ from time import monotonic
 import typing
 
 # Async ModbusTcpClient is unrealible. Hopefully that will get fixed with
-# pymodbus 3.0.0 release. Use sync for now
+# pymodbus 3.0.0 release. Use sync for now.
+# TODO DM-35334
 from pymodbus.client.sync import ModbusTcpClient as ModbusClient
 import pymodbus.exceptions
 
@@ -68,7 +69,7 @@ class MTAirCompressorCsc(salobj.BaseCsc):
             simulation_mode=simulation_mode,
         )
 
-        self.grace_period = 600  # TODO should be configurable - DM-35280
+        self.grace_period = 20  # TODO should be configurable - DM-35280
 
         self.connection = None
         self.model = None
@@ -202,9 +203,15 @@ class MTAirCompressorCsc(salobj.BaseCsc):
             return
 
     async def end_enable(self, data):
-        """Power on compressor after switching to enable state. Raise exception
-        if compressor cannot be powered on. Ignore state transition triggered
-        by auto update."""
+        """Power on compressor after switching to enable state.
+
+        Raise exception if compressor cannot be powered on. Ignore state transition triggered
+        by auto update.
+
+        Raises
+        ------
+        ModbusError
+            On Modbus error."""
         if self._status_update:
             return
         if not self._start_by_remote:
@@ -221,8 +228,14 @@ class MTAirCompressorCsc(salobj.BaseCsc):
             await self.log_modbus_error(ex, "Cannot power on compressor")
 
     async def begin_disable(self, data):
-        """Power off compressor before switching to disable state. Ignore state
-        transition triggered by auto update."""
+        """Power off compressor before switching to disable state.
+
+        Ignore state transition triggered by auto update.
+
+        Raises
+        ------
+        ModbusError
+            On Modbus error."""
         if self._status_update:
             return
         try:
