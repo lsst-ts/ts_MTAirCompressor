@@ -24,9 +24,13 @@ __all__ = ["ModbusError", "MTAirCompressorModel"]
 import enum
 
 
-# Address of registers of interest. Please see Delcos XL documentation for details.
-# https://confluence.lsstcorp.org/display/LTS/Datasheets (you need LSST login)
-class Registers(enum.IntEnum):
+class Register(enum.IntEnum):
+    """Address of registers of interest.
+
+    Please see Delcos XL documentation for details.
+    https://confluence.lsstcorp.org/display/LTS/Datasheets (you need LSST login)
+    """
+
     # telemetry block
     WATER_LEVEL = 0x1E
 
@@ -77,6 +81,11 @@ class ModbusError(RuntimeError):
     def __init__(self, modbusException, message=""):
         super().__init__(message)
         self.exception = modbusException
+
+    def __str__(self):
+        if self.args[0] is not None and self.args[0] != "":
+            return f"{str(self.exception)} - {self.args[0]}"
+        return str(self.exception)
 
 
 class MTAirCompressorModel:
@@ -135,7 +144,7 @@ class MTAirCompressorModel:
         ModbusError
             When reset cannot be performed.
         """
-        return self.set_register(Registers.RESET, 0xFF01, "Cannot reset compressor")
+        return self.set_register(Register.RESET, 0xFF01, "Cannot reset compressor")
 
     def power_on(self):
         """Power on compressor.
@@ -153,7 +162,7 @@ class MTAirCompressorModel:
             equals 16.
         """
         return self.set_register(
-            Registers.REMOTE_CMD, 0xFF01, "Cannot power on compressor"
+            Register.REMOTE_CMD, 0xFF01, "Cannot power on compressor"
         )
 
     def power_off(self):
@@ -172,7 +181,7 @@ class MTAirCompressorModel:
             equals 16.
         """
         return self.set_register(
-            Registers.REMOTE_CMD, 0xFF00, "Cannot power down compressor"
+            Register.REMOTE_CMD, 0xFF00, "Cannot power down compressor"
         )
 
     def get_registers(self, address, count, error_status):
@@ -206,7 +215,7 @@ class MTAirCompressorModel:
         ModbusError
             When registers cannot be retrieved.
         """
-        return self.get_registers(Registers.STATUS, 3, "Cannot read status")
+        return self.get_registers(Register.STATUS, 3, "Cannot read status")
 
     def get_error_registers(self):
         """Read compressor errors - 16 registers starting from address 0x63.
@@ -220,7 +229,7 @@ class MTAirCompressorModel:
             When registers cannot be retrieved.
         """
         return self.get_registers(
-            Registers.ERROR_E400, 16, "Cannot read error registers"
+            Register.ERROR_E400, 16, "Cannot read error registers"
         )
 
     def get_compressor_info(self):
@@ -234,14 +243,14 @@ class MTAirCompressorModel:
             When registers cannot be retrieved.
         """
         return self.get_registers(
-            Registers.SOFTWARE_VERSION, 23, "Cannot read compressor info"
+            Register.SOFTWARE_VERSION, 23, "Cannot read compressor info"
         )
 
     def get_analog_data(self):
         """Read compressor info - register 0x1E and 14 registers starting from address 0x22.
 
         Those form compressor telemetry - includes various measurements. See
-        Registers and Delcos manual for indices.
+        Register and Delcos manual for indices.
 
         Raises
         ------
@@ -249,8 +258,8 @@ class MTAirCompressorModel:
             When registers cannot be retrieved.
         """
         return self.get_registers(
-            Registers.WATER_LEVEL, 1, "Cannot read water level"
-        ) + self.get_registers(Registers.TARGET_SPEED, 14, "Cannot read analog data")
+            Register.WATER_LEVEL, 1, "Cannot read water level"
+        ) + self.get_registers(Register.TARGET_SPEED, 14, "Cannot read analog data")
 
     def get_timers(self):
         """Read compressor timers - 8 registers starting from address 0x39.
@@ -262,4 +271,4 @@ class MTAirCompressorModel:
         ModbusError
             When registers cannot be retrieved.
         """
-        return self.get_registers(Registers.RUNNING_HOURS, 8, "Cannot read timers")
+        return self.get_registers(Register.RUNNING_HOURS, 8, "Cannot read timers")
