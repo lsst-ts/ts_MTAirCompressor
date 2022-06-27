@@ -25,5 +25,18 @@ import enum
 
 
 class ErrorCode(enum.IntEnum):
+    """Internal CsC error codes, reported with faults. Modbus faults can be
+    reported as well, with their number the fault number. Unfortunately none of
+    Delcos manuals we read contains the codes, and the ones we know doesn't
+    match any generic Modbus codes. So far those are known:
+
+    16 (0x10) - cannot start/stop compressor, as remote startup isn't allowed
+
+    The other codes are:
+
+    COULD_NOT_CONNECT - raised when ModBus TCP gateway cannot be contacted
+    MODBUS_ERROR - generic Modbus error. Raised when Modbus response wasn't received
+    """
+
     COULD_NOT_CONNECT = 98  # cannot connect to compressor
     MODBUS_ERROR = 99
