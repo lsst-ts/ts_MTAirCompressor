@@ -77,6 +77,9 @@ class MTAirCompressorCsc(salobj.BaseCsc):
         self.simulator_future = None
         self._start_by_remote = False
         self._status_update = False
+        # This will be reseted to None only after connection is properly re-established.
+        # Don't reset it in def connect, as it is needed in poll_loop to report time waiting
+        # for reconnection.
         self._failed_time = None
 
         self.poll_task = utils.make_done_future()
@@ -151,13 +154,11 @@ class MTAirCompressorCsc(salobj.BaseCsc):
 
         self._failed_time = None
 
-    def start_loop(self, loop):
-        loop.run_forever()
-
     async def connect(self):
         if self.connection is None:
+            # starts thread with new event loop. This is required by ModbusTCPAsyncClient.
             loop = asyncio.new_event_loop()
-            self.modbus_thread = Thread(target=self.start_loop, args=[loop])
+            self.modbus_thread = Thread(target=loop.run_forever)
             self.modbus_thread.start()
             self.modbus_loop, self.connection = ModbusClient(
                 schedulers.ASYNC_IO,
@@ -501,6 +502,9 @@ class MTAirCompressorCsc(salobj.BaseCsc):
 
                 await asyncio.sleep(1)
             except Exception as ex:
+                import traceback
+
+                traceback.print_exc()
                 self.log.exception(f"Exception in poll loop: {str(ex)}")
 
             if self.summary_state == salobj.State.FAULT:
