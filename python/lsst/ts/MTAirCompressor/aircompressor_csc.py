@@ -227,6 +227,9 @@ class MTAirCompressorCsc(salobj.BaseCsc):
         if self._status_update:
             return
         if not self._start_by_remote:
+            # This can happens when compressor isn't ready to be started up
+            # as it is being powered down, and first power down sequence must
+            # be finished.
             raise RuntimeError(
                 "Compressor isn't in remote mode - cannot be powered on remotely"
             )
