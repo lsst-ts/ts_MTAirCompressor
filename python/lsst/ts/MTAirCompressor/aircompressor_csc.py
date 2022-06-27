@@ -83,7 +83,9 @@ class MTAirCompressorCsc(salobj.BaseCsc):
         self._failed_time = None
 
         self.poll_task = utils.make_done_future()
+        self.thread_loop = None
         self.modbus_loop = None
+        self.modbus_thread = None
 
     @classmethod
     def add_arguments(cls, parser: argparse.ArgumentParser) -> None:
@@ -126,8 +128,7 @@ class MTAirCompressorCsc(salobj.BaseCsc):
         await self.disconnect()
 
     async def log_modbus_error(self, modbus_error, msg="", ignore_timeouts=False):
-        if isinstance(modbus_error.exception, pymodbus.exceptions.ConnectionException):
-            await self.disconnect()
+        await self.disconnect()
 
         if not ignore_timeouts:
             if self.summary_state != salobj.State.FAULT and (
@@ -157,7 +158,7 @@ class MTAirCompressorCsc(salobj.BaseCsc):
     async def connect(self):
         if self.connection is None:
             # starts thread with new event loop. This is required by ModbusTCPAsyncClient.
-            loop = asyncio.new_event_loop()
+            self.thread_loop = asyncio.new_event_loop()
             self.modbus_thread = Thread(target=loop.run_forever)
             self.modbus_thread.start()
             self.modbus_loop, self.connection = ModbusClient(
@@ -166,6 +167,11 @@ class MTAirCompressorCsc(salobj.BaseCsc):
                 port=self.port,
                 loop=loop,
                 timeout=0.5,
+            )
+            print(
+                "Connection",
+                self.connection,
+                self.connection.protocol,
             )
             if self.connection.protocol is None:
                 raise ModbusError(
@@ -185,6 +191,13 @@ class MTAirCompressorCsc(salobj.BaseCsc):
             disconnected = False
         if self.modbus_loop is not None:
             self.modbus_loop.stop()
+        if self.thread_loop is not None:
+            self.thread_loop.stop()
+            self.thread_loop = None
+        if self.modbus_thread is not None:
+            self.modbus_thread.join(1)
+            self.modbus_thread = None
+            print("None for modbus_thread")
         self.connection = None
         self.model = None
         if disconnected:
@@ -512,6 +525,9 @@ class MTAirCompressorCsc(salobj.BaseCsc):
 
                 traceback.print_exc()
                 self.log.exception(f"Exception in poll loop: {str(ex)}")
+                import sys
+
+                sys.exit(0)
 
             if self.summary_state == salobj.State.FAULT:
                 return
