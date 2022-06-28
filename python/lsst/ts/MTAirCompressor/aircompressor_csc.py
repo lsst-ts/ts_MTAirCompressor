@@ -175,6 +175,13 @@ class MTAirCompressorCsc(salobj.BaseCsc):
         await self.update_compressor_info()
         self.log.debug(f"Connected to {self.hostname}:{self.port}")
 
+        if self._failed_tai is not None:
+            self.log.info(
+                "Compressor connection is back after "
+                f"{utils.current_tai() - self._failed_tai:.1f} seconds"
+            )
+            self._failed_tai = None
+
     async def disconnect(self):
         self.model = None
         if self.connection is not None:
@@ -479,11 +486,6 @@ class MTAirCompressorCsc(salobj.BaseCsc):
                 if self._failed_tai is not None:
                     try:
                         await self.connect()
-                        self.log.info(
-                            "Compressor connection is back after "
-                            f"{utils.current_tai() - self._failed_tai:.1f} seconds"
-                        )
-                        self._failed_tai = None
                     except ModbusError as er:
                         await self.log_modbus_error(er, "While reconnecting:")
                         await asyncio.sleep(5)
