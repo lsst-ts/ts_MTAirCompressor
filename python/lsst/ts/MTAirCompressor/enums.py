@@ -17,12 +17,26 @@
 # GNU General Public License for more details.
 #
 # You should have received a copy of the GNU General Public License
-# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+# along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-try:
-    from .version import *
-except ImportError:
-    __version__ = "?"
+__all__ = ["ErrorCode"]
 
-from .aircompressor_csc import *
-from .aircompressor_model import *
+import enum
+
+
+class ErrorCode(enum.IntEnum):
+    """Internal CsC error codes, reported with faults. Modbus faults can be
+    reported as well, with their number the fault number. Unfortunately none of
+    Delcos manuals we read contains the codes, and the ones we know doesn't
+    match any generic Modbus codes. So far those are known:
+
+    16 (0x10) - cannot start/stop compressor, as remote startup isn't allowed
+
+    The other codes are:
+
+    COULD_NOT_CONNECT - raised when ModBus TCP gateway cannot be contacted
+    MODBUS_ERROR - generic Modbus error. Raised when Modbus response wasn't received
+    """
+
+    COULD_NOT_CONNECT = 98  # cannot connect to compressor
+    MODBUS_ERROR = 99

@@ -28,7 +28,3 @@ class MTAirCompressorCscTestCase(
             exe_name="run_mtaircompressor.py",
             index=2,
         )
-
-
-if __name__ == "__main__":
-    unittest.main()
