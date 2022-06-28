@@ -23,7 +23,7 @@ __all__ = ["MTAirCompressorCsc"]
 
 import argparse
 import asyncio
-from time import monotonic
+import concurrent.futures
 import typing
 
 # Async ModbusTcpClient is unrealible. Hopefully that will get fixed with
@@ -69,18 +69,21 @@ class MTAirCompressorCsc(salobj.BaseCsc):
             simulation_mode=simulation_mode,
         )
 
-        self.grace_period = 20  # TODO should be configurable - DM-35280
+        self.grace_period = 600  # TODO should be configurable - DM-35280
 
         self.connection = None
         self.model = None
         self.simulator = None
-        self.simulator_future = utils.make_done_future()
-        self._start_by_remote = False
-        self._status_update = False
+        self.simulator_task = utils.make_done_future()
+        # True if compressor can be started remotely. Used before start command is issued
+        # to clearly indicate the problem
+        self._start_by_remote: bool = False
+        # If True, status update is in progress. TODO Will be deprecated and removed in DM-35280
+        self._status_update: bool = False
         # This will be reseted to None only after connection is properly re-established.
         # Don't reset it in def connect, as it is needed in poll_loop to report time waiting
-        # for reconnection.
-        self._failed_time = None
+        # for reconnection. None when not failed, TAI when failure was firstly detected
+        self._failed_tai: float = None
 
         self.poll_task = utils.make_done_future()
 
@@ -120,7 +123,7 @@ class MTAirCompressorCsc(salobj.BaseCsc):
         await super().close_tasks()
         if self.simulation_mode == 1:
             await self.simulator.shutdown()
-            await self.simulator_future.cancel()
+            await self.simulator_task.cancel()
         self.poll_task.cancel()
         await self.disconnect()
 
@@ -130,16 +133,16 @@ class MTAirCompressorCsc(salobj.BaseCsc):
 
         if not ignore_timeouts:
             if self.summary_state != salobj.State.FAULT and (
-                self._failed_time is None
-                or monotonic() < self._failed_time + self.grace_period
+                self._failed_tai is None
+                or utils.current_tai() < self._failed_tai + self.grace_period
             ):
                 self.log.error(str(modbus_error))
-                if self._failed_time is None:
+                if self._failed_tai is None:
                     self.log.warning(
                         "Lost compressor connection, will try to reconnect for"
                         f" {self.grace_period} seconds"
                     )
-                    self._failed_time = monotonic()
+                    self._failed_tai = utils.current_tai()
                 return
 
         try:
@@ -152,7 +155,7 @@ class MTAirCompressorCsc(salobj.BaseCsc):
             else:
                 await self.fault(ErrorCode.MODBUS_ERROR, msg + str(modbus_error))
 
-        self._failed_time = None
+        self._failed_tai = None
 
     async def connect(self):
         if self.connection is None:
@@ -178,21 +181,18 @@ class MTAirCompressorCsc(salobj.BaseCsc):
     async def end_start(self, data):
         """Enables communication with the compressor."""
         if self.simulation_mode == 1:
-            self.hostname = "localhost"
             self.unit = 1
 
-            def run_sim():
-                # Returned ModbusTcpServer is subclass of socketserver.ThreaingTCPServer
-                # socketserver.ThreaingTCPServer stores address and host in
-                # server_address local variable.
-                self.simulator = create_server()
-                self.host, self.port = self.simulator.server_address
-                self.simulator.serve_forever()
+            self.simulator = create_server()
+            # Returned ModbusTcpServer is subclass of
+            # socketserver.ThreadingTCPServer socketserver.ThreadingTCPServer
+            # stores address and host in server_address local variable.
+            self.hostname, self.port = self.simulator.server_address
 
-            self.simulator_future = asyncio.get_running_loop().run_in_executor(
-                None, run_sim
+            executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+            self.simulator_task = asyncio.get_running_loop().run_in_executor(
+                executor, self.simulator.serve_forever
             )
-            await asyncio.sleep(2)
 
         try:
             await self.connect()
@@ -472,14 +472,14 @@ class MTAirCompressorCsc(salobj.BaseCsc):
     async def poll_loop(self):
         while True:
             try:
-                if self._failed_time is not None:
+                if self._failed_tai is not None:
                     try:
                         await self.connect()
                         self.log.info(
                             "Compressor connection is back after "
-                            f"{monotonic() - self._failed_time:.1f} seconds"
+                            f"{utils.current_tai() - self._failed_tai:.1f} seconds"
                         )
-                        self._failed_time = None
+                        self._failed_tai = None
                     except ModbusError as er:
                         await self.log_modbus_error(er, "While reconnecting:")
                         await asyncio.sleep(5)
