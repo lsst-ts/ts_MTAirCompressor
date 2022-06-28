@@ -125,8 +125,8 @@ class MTAirCompressorCsc(salobj.BaseCsc):
     async def close_tasks(self) -> None:
         await super().close_tasks()
         if self.simulation_mode == 1:
-            await self.simulator.shutdown()
-            await self.simulator_task.cancel()
+            self.simulator.shutdown()
+            self.simulator_task.cancel()
         self.poll_task.cancel()
         await self.disconnect()
 

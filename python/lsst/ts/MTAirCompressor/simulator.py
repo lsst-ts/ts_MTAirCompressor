@@ -28,16 +28,36 @@ from pymodbus.datastore import (
     ModbusServerContext,
 )
 
+from .aircompressor_model import Register
+
+
+class SimulatedHrBlock(ModbusSequentialDataBlock):
+    def __init__(self):
+        block = [0] * 0x1E + list(range(1, 20)) + [0x01, 0x0, 0x01] + [0] * 0x120
+        super().__init__(0, block)
+
+    def setValues(self, address, values):
+        # there is mismatch in indexing, + 1 is needed on Register.xxx side
+        if address == Register.REMOTE_CMD + 1:
+            super().setValues(
+                Register.STATUS + 1, [0x02] if values[0] == 0xFF01 else [0x01]
+            )
+            super().setValues(
+                Register.INHIBIT + 1, [0x00] if values[0] == 0xFF01 else [0x01]
+            )
+        super().setValues(address, values)
+
 
 def create_server():
-    """Create simulator server.
+    """Create simulator server. Uses arbitrary constants for values, please
+    consult Delcos XL register map - see Register enum.
 
     Returns
     -------
     server : `ModbusTcpServer`
         Created server instance.
     """
-    store = ModbusSlaveContext(hr=ModbusSequentialDataBlock(0, [47] * 0xA000))
+    store = ModbusSlaveContext(hr=SimulatedHrBlock())
     context = ModbusServerContext(slaves=store, single=True)
 
     return ModbusTcpServer(context, address=("localhost", 0))

@@ -57,6 +57,8 @@ class Register(enum.IntEnum):
     LOADED_HOURS_50_PERECENT = 0x3E  # 64 bit, 2 registers
 
     STATUS = 0x30  # flags - started, ..
+    INHIBIT = 0x32  # inhibits - remote start, ..
+
     ERROR_E400 = 0x63  # 16 registers with error and warning flags
 
     SOFTWARE_VERSION = 0xC7  # 14 ASCII registers
