@@ -19,49 +19,25 @@
 # You should have received a copy of the GNU General Public License
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-__all__ = ["MTAirCompressorCsc"]
+__all__ = ["MTAirCompressorCsc", "run_mtaircompressor"]
 
 import argparse
 import asyncio
+import concurrent.futures
 import typing
-from lsst.ts import salobj, utils
-from lsst.ts.salobj import base
 
-# although pymodbus supports asyncio, it's uselless to use asyncio version
-# as there isn't any extra processing which can occur while waiting for modbus
-# data
+# Async ModbusTcpClient is unrealible. Hopefully that will get fixed with
+# pymodbus 3.0.0 release. Use sync for now.
+# TODO DM-35334
 from pymodbus.client.sync import ModbusTcpClient as ModbusClient
+import pymodbus.exceptions
+
+from lsst.ts import salobj, utils
 
 from . import __version__
+from .aircompressor_model import MTAirCompressorModel, ModbusError
+from .enums import ErrorCode
 from .simulator import create_server
-
-
-class ModbusError(base.ExpectedError):
-    """Exception raised on modbus errors. Please note that shall be superset by
-    pymodbus solution, if it ever materialize, See:
-    https://github.com/riptideio/pymodbus/issues/298
-
-    Parameters
-    ----------
-    modbus_exception : `pymodbus.pdu.ExceptionResponse`
-        Exception returned from Modbus function
-    """
-
-    def __init__(self, what, modbus_exception, address):
-        if modbus_exception.original_code == 4:
-            message = (
-                f"Cannot address 0x{address:04x}: {modbus_exception.exception_code}"
-            )
-        elif modbus_exception.original_code == 6:
-            message = f"Cannot write register address 0x{address:04x}: {modbus_exception.exception_code}"
-        else:
-            message = (
-                f"Cannot call function {modbus_exception.function_code} : "
-                f"{modbus_exception.exception_code}, address 0x{address:04x}"
-            )
-        super().__init__(what + " " + message)
-
-        self.exception = modbus_exception
 
 
 class MTAirCompressorCsc(salobj.BaseCsc):
@@ -74,36 +50,60 @@ class MTAirCompressorCsc(salobj.BaseCsc):
     initial_state : `lsst.ts.salobj.State`
         CSC initial state.
     simulation_mode : `int`
-        CSC simulation mode. 0 - no simulation, 1 - software simulation (no mock modbus needed)
+        CSC simulation mode. 0 - no simulation, 1 - software simulation (no
+        mock modbus needed).
     """
 
     version = __version__
     valid_simulation_modes: typing.Sequence[int] = (0, 1)
 
     def __init__(
-        self, index: int, initial_state=salobj.State.DISABLED, simulation_mode: int = 0
+        self,
+        index: int,
+        initial_state=salobj.State.DISABLED,
+        simulation_mode: int = 0,
     ):
         super().__init__(
             name="MTAirCompressor",
             index=index,
-            simulation_mode=simulation_mode,
             initial_state=initial_state,
+            simulation_mode=simulation_mode,
         )
 
-        self.first_run = True
-        self.client = None
+        self.grace_period = 600  # TODO should be configurable - DM-35280
+
+        self.connection = None
+        self.model = None
         self.simulator = None
-        self.simulator_future = None
-        self.telemetry_task = utils.make_done_future()
+        self.simulator_task = utils.make_done_future()
+        # True if compressor can be started remotely. Used before start command
+        # is issued to clearly indicate the problem
+        self._start_by_remote: bool = False
+        # If True, status update is in progress.
+        # TODO Will be deprecated and removed in DM-35280
+        self._status_update: bool = False
+        # This will be reseted to None only after connection is properly
+        # re-established.  Don't reset it in def connect, as it is needed in
+        # poll_loop to report time waiting for reconnection. None when not
+        # failed, TAI when failure was firstly detected
+        self._failed_tai: float = None
+
+        self.poll_task = utils.make_done_future()
 
     @classmethod
     def add_arguments(cls, parser: argparse.ArgumentParser) -> None:
-        """Adds custom --hostname and --unit arguments."""
+        """Adds custom --hostname, --port and --unit arguments."""
         parser.add_argument(
             "--hostname",
             type=str,
             default=None,
             help="hostname. Unless specified, m1m3cam-aircomp0X.cp.lsst.org, where X is compressor index",
+        )
+        parser.add_argument(
+            "--port",
+            type=int,
+            default=502,
+            help="TCP/IP port. Defaults to 502 (default Modbus TCP/IP port)",
         )
         parser.add_argument(
             "--unit", type=int, default=None, help="modbus unit address"
@@ -113,83 +113,165 @@ class MTAirCompressorCsc(salobj.BaseCsc):
     def add_kwargs_from_args(
         cls, args: argparse.Namespace, kwargs: typing.Dict[str, typing.Any]
     ) -> None:
-        """Process custom --hostname and --unit arguments."""
+        """Process custom --hostname, --port and --unit arguments."""
         cls.hostname = (
             f"m1m3cam-aircomp{kwargs['index']:02d}.cp.lsst.org"
             if args.hostname is None
             else args.hostname
         )
+        cls.port = args.port
         cls.unit = kwargs["index"] if args.unit is None else args.unit
 
     async def close_tasks(self) -> None:
-        if self.simulation_mode == 1:
-            await self.simulator.shutdown()
-            await self.simulator_future.cancel()
         await super().close_tasks()
+        if self.simulation_mode == 1:
+            self.simulator.shutdown()
+            self.simulator_task.cancel()
+        self.poll_task.cancel()
+        await self.disconnect()
 
-    async def begin_start(self, data):
+    async def log_modbus_error(self, modbus_error, msg="", ignore_timeouts=False):
+        if isinstance(modbus_error.exception, pymodbus.exceptions.ConnectionException):
+            await self.disconnect()
+
+        if not ignore_timeouts:
+            if self.summary_state != salobj.State.FAULT and (
+                self._failed_tai is None
+                or utils.current_tai() < self._failed_tai + self.grace_period
+            ):
+                self.log.error(str(modbus_error))
+                if self._failed_tai is None:
+                    self.log.warning(
+                        "Lost compressor connection, will try to reconnect for"
+                        f" {self.grace_period} seconds"
+                    )
+                    self._failed_tai = utils.current_tai()
+                return
+
+        try:
+            await self.fault(modbus_error.exception.original_code, msg)
+        except AttributeError:
+            if isinstance(
+                modbus_error.exception, pymodbus.exceptions.ConnectionException
+            ):
+                await self.fault(ErrorCode.COULD_NOT_CONNECT, msg + str(modbus_error))
+            else:
+                await self.fault(ErrorCode.MODBUS_ERROR, msg + str(modbus_error))
+
+        self._failed_tai = None
+
+    async def connect(self):
+        if self.connection is None:
+            self.connection = ModbusClient(self.hostname, self.port)
+        ret = self.connection.connect()
+        if ret is False:
+            raise ModbusError(
+                pymodbus.exceptions.ConnectionException(
+                    f"Cannot establish connection to {self.hostname}:{self.port}"
+                )
+            )
+        if self.model is None:
+            self.model = MTAirCompressorModel(self.connection, self.unit)
+        await self.update_compressor_info()
+        self.log.debug(f"Connected to {self.hostname}:{self.port}")
+
+        if self._failed_tai is not None:
+            self.log.info(
+                "Compressor connection is back after "
+                f"{utils.current_tai() - self._failed_tai:.1f} seconds"
+            )
+            self._failed_tai = None
+
+    async def disconnect(self):
+        self.model = None
+        if self.connection is not None:
+            self.connection.close()
+            self.connection = None
+
+    async def end_start(self, data):
         """Enables communication with the compressor."""
         if self.simulation_mode == 1:
-            self.hostname = "localhost"
             self.unit = 1
 
-            def run_sim():
-                self.simulator = create_server()
-                self.simulator.serve_forever()
+            self.simulator = create_server()
+            # Returned ModbusTcpServer is subclass of
+            # socketserver.ThreadingTCPServer socketserver.ThreadingTCPServer
+            # stores address and host in server_address local variable.
+            self.hostname, self.port = self.simulator.server_address
 
-            self.simulator_future = asyncio.get_running_loop().run_in_executor(
-                None, run_sim
+            executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+            self.simulator_task = asyncio.get_running_loop().run_in_executor(
+                executor, self.simulator.serve_forever
             )
-            await asyncio.sleep(2)
-            self.client = ModbusClient(host="localhost", port=5020)
-        else:
-            self.client = ModbusClient(host=self.hostname)
 
-        if self.client.connect() is False:
-            self.log.error(f"Cannot establish connection to {self.hostname}")
-
-        self.telemetry_task = asyncio.create_task(self.telemetry_loop())
+        try:
+            await self.connect()
+            if self.poll_task.done():
+                self.poll_task = asyncio.create_task(self.poll_loop())
+        except ModbusError as er:
+            await self.log_modbus_error(er, "Starting up:", True)
+            return
 
     async def end_enable(self, data):
-        """Power on compressor after switching to enable state. Raise exception
-        if compressor cannot be powered on."""
-        poweredOn = self.client.write_register(0x12B, 0xFF01, unit=self.unit)
-        if poweredOn.isError():
-            raise ModbusError("Cannot power on compressor", poweredOn, 0x12B)
+        """Power on compressor after switching to enable state.
 
-    async def end_disable(self, data):
-        """Power off compressor after switching to disable state."""
-        poweredDown = self.client.write_register(0x12B, 0xFF00, unit=self.unit)
-        if poweredDown.isError():
-            raise ModbusError("Cannot power off compressor", poweredDown, 0x12B)
-        self.telemetry_task.cancel()
+        Raise exception if compressor cannot be powered on. Ignore state
+        transition triggered by auto update.
+
+        Raises
+        ------
+        ModbusError
+            On Modbus error."""
+        if self._status_update:
+            return
+        if not self._start_by_remote:
+            # This can happens when compressor isn't ready to be started up
+            # as it is being powered down, and first power down sequence must
+            # be finished.
+            raise RuntimeError(
+                "Compressor isn't in remote mode - cannot be powered on remotely"
+            )
+
+        try:
+            self.model.power_on()
+        except ModbusError as ex:
+            await self.log_modbus_error(ex, "Cannot power on compressor")
+
+    async def begin_disable(self, data):
+        """Power off compressor before switching to disable state.
+
+        Ignore state transition triggered by auto update.
+
+        Raises
+        ------
+        ModbusError
+            On Modbus error."""
+        if self._status_update:
+            return
+        try:
+            self.model.power_off()
+        except ModbusError as ex:
+            try:
+                if ex.exception.original_code & 0x10 == 0x10:
+                    raise RuntimeError(
+                        "Compressor isn't in remote mode - cannot be powered off"
+                    )
+            except AttributeError:
+                pass
+            await self.log_modbus_error(ex, "Cannot power off compressor")
 
     async def do_reset(self, data):
         """Reset compressor faults."""
-        if self.client is None:
-            return
-        reseted = self.client.write_register(0x12D, 0xFF01, unit=self.unit)
-        if reseted.isError():
-            self.fail("Cannot reset compressor")
-            raise ModbusError("Cannot reset compressor", reseted, 0x12D)
+        self.model.reset()
 
     async def update_status(self):
-        """Read compressor status - 3 registers starting from address 0x30."""
-        status = self.client.read_holding_registers(0x30, 3, unit=self.unit)
-        print(status, status.isError())
-        if status.isError():
-            raise ModbusError("Cannot read status", status, 0x30)
-
-        def _statusBits(fields, value):
-            ret = {}
-            for f in fields:
-                ret[f] = value & 0x0001
-                value >>= 1
-            return ret
+        """Read compressor status - 3 status registers starting from address
+        0x30."""
+        status = self.model.get_status()
 
         await self.evt_status.set_write(
             **_statusBits(
-                (
+                [
                     "readyToStart",
                     "operating",
                     "startInhibit",
@@ -203,19 +285,125 @@ class MTAirCompressorCsc(salobj.BaseCsc):
                     "serviceRequired",
                     "minAllowedSpeedAchieved",
                     "maxAllowedSpeedAchieved",
-                ),
-                status.registers[0],
+                ],
+                status[0],
             ),
             **_statusBits(
-                (
+                [
                     "startByRemote",
                     "startWithTimerControl",
                     "startWithPressureRequirement",
                     "startAfterDePressurise",
                     "startAfterPowerLoss",
                     "startAfterDryerPreRun",
-                ),
-                status.registers[2],
+                ],
+                status[2],
+            ),
+        )
+
+        self._start_by_remote = status[2] & 0x01 == 0x01
+        self._status_update = True
+
+        if status[0] & 0x02 == 0x02:
+            # None can be passed, as begin_enable and begin_disable called from
+            # _do_change_state don't care about its content
+            if self.summary_state != salobj.State.ENABLED:
+                await self.do_enable(None)
+                self.log.info("Auto switched to enabled, as compressor is running")
+        else:
+            if self.summary_state != salobj.State.DISABLED:
+                await self.do_disable(None)
+                self.log.warning(
+                    "Auto switched to disabled, as compressor was powered down"
+                )
+
+        self._status_update = False
+
+    async def update_errorsWarnings(self):
+        errorsWarnings = self.model.get_error_registers()
+
+        await self.evt_errors.set_write(
+            **_statusBits(
+                [
+                    "powerSupplyFailureE400",
+                    "emergencyStopActivatedE401",
+                    "highMotorTemperatureM1E402",
+                    "compressorDischargeTemperatureE403",
+                    "startTemperatureLowE404",
+                    "dischargeOverPressureE405",
+                    "linePressureSensorB1E406",
+                    "dischargePressureSensorB2E407",
+                    "dischargeTemperatureSensorR2E408",
+                    "controllerHardwareE409",
+                    "coolingE410",
+                    "oilPressureLowE411",
+                    "externalFaultE412",
+                    "dryerE413",
+                    "condensateDrainE414",
+                    "noPressureBuildUpE415",
+                ],
+                errorsWarnings[0],
+            ),
+            **_statusBits(
+                ["heavyStartupE416"],
+                errorsWarnings[1],
+            ),
+            **_statusBits(
+                [
+                    "preAdjustmentVSDE500",
+                    "preAdjustmentE501",
+                    "lockedVSDE502",
+                    "writeFaultVSDE503",
+                    "communicationVSDE504",
+                    "stopPressedVSDE505",
+                    "stopInputEMVSDE506",
+                    "readFaultVSDE507",
+                    "stopInputVSDEME508",
+                    "seeVSDDisplayE509",
+                    "speedBelowMinLimitE510",
+                ],
+                errorsWarnings[6],
+            ),
+        )
+
+        await self.evt_warnings.set_write(
+            **_statusBits(
+                [
+                    "serviceDueA600",
+                    "dischargeOverPressureA601",
+                    "compressorDischargeTemperatureA602",
+                    None,
+                    None,
+                    None,
+                    "linePressureHighA606",
+                    "controllerBatteryEmptyA607",
+                    "dryerA608",
+                    "condensateDrainA609",
+                    "fineSeparatorA610",
+                    "airFilterA611",
+                    "oilFilterA612",
+                    "oilLevelLowA613",
+                    "oilTemperatureHighA614",
+                    "externalWarningA615",
+                ],
+                errorsWarnings[8],
+            ),
+            **_statusBits(
+                [
+                    "motorLuricationSystemA616",
+                    "input1A617",
+                    "input2A618",
+                    "input3A619",
+                    "input4A620",
+                    "input5A621",
+                    "input6A622",
+                    "fullSDCardA623",
+                ],
+                errorsWarnings[9],
+            ),
+            **_statusBits(
+                ["temperatureHighVSDA700"],
+                errorsWarnings[14],
             ),
         )
 
@@ -225,82 +413,127 @@ class MTAirCompressorCsc(salobj.BaseCsc):
         def to_string(arr):
             return "".join(map(chr, arr))
 
-        info1 = self.client.read_holding_registers(0xC7, 23, unit=self.unit)
-        if info1.isError():
-            raise ModbusError("Cannot read compressor version", info1, 0xC7)
+        info = self.model.get_compressor_info()
         await self.evt_compressorInfo.set_write(
-            softwareVersion=to_string(info1.registers[0:14]),
-            serialNumber=to_string(info1.registers[14:23]),
+            softwareVersion=to_string(info[0:14]),
+            serialNumber=to_string(info[14:23]),
         )
 
     async def update_analog_data(self):
         """Read compressor analog (telemetry-worth) data."""
-        analog1 = self.client.read_holding_registers(0x1E, 1, unit=self.unit)
-        if analog1.isError():
-            raise ModbusError("Cannot read telemetry", analog1, 0x1E)
-        analog2 = self.client.read_holding_registers(0x22, 14, unit=self.unit)
-        if analog2.isError():
-            raise ModbusError("Cannot read telemetry", analog2, 0x22)
+        analog = self.model.get_analog_data()
 
         await self.tel_analogData.set_write(
             force_output=True,
-            waterLevel=analog1.registers[0],
-            targetSpeed=analog2.registers[0],
-            motorCurrent=analog2.registers[1] / 10.0,
-            heatsinkTemperature=analog2.registers[2],
-            dclinkVoltage=analog2.registers[3],
-            motorSpeedPercentage=analog2.registers[4],
-            motorSpeedRPM=analog2.registers[5],
-            motorInput=analog2.registers[6] / 10.0,
-            compressorPowerConsumption=analog2.registers[7] / 10.0,
-            compressorVolumePercentage=analog2.registers[8],
-            compressorVolume=analog2.registers[9] / 10.0,
-            groupVolume=analog2.registers[10] / 10.0,
-            stage1OutputPressure=analog2.registers[11],
-            linePressure=analog2.registers[12],
-            stage1OutputTemperature=analog2.registers[13],
+            waterLevel=analog[0],
+            targetSpeed=analog[1],
+            motorCurrent=analog[2] / 10.0,
+            heatsinkTemperature=analog[3],
+            dclinkVoltage=analog[4],
+            motorSpeedPercentage=analog[5],
+            motorSpeedRPM=analog[6],
+            motorInput=analog[7] / 10.0,
+            compressorPowerConsumption=analog[8] / 10.0,
+            compressorVolumePercentage=analog[9],
+            compressorVolume=analog[10] / 10.0,
+            groupVolume=analog[11] / 10.0,
+            stage1OutputPressure=analog[12],
+            linePressure=analog[13],
+            stage1OutputTemperature=analog[14],
         )
 
     async def update_timer(self):
         """Read compressors timers."""
-        timer = self.client.read_holding_registers(0x39, 8, unit=self.unit)
-        if timer.isError():
-            raise ModbusError("Cannot read timers", timer, 0x39)
+        timer = self.model.get_timers()
 
         def to_64(a):
             return a[0] << 16 | a[1]
 
         await self.evt_timerInfo.set_write(
-            runningHours=to_64(timer.registers[0:2]),
-            loadedHours=to_64(timer.registers[2:4]),
-            lowestServiceCounter=timer.registers[4],
-            runOnTimer=timer.registers[5],
-            loadedHours50Percent=to_64(timer.registers[6:8]),
+            runningHours=to_64(timer[0:2]),
+            loadedHours=to_64(timer[2:4]),
+            lowestServiceCounter=timer[4],
+            runOnTimer=timer[5],
+            loadedHours50Percent=to_64(timer[6:8]),
         )
 
     async def telemetry_loop(self):
         """Runs telemetry loop."""
         timerUpdate = 0
-        while True:
-            try:
+        try:
+            while True:
                 await self.update_status()
+                await self.update_errorsWarnings()
                 await self.update_analog_data()
-
-                if self.first_run:
-                    await self.update_compressor_info()
-                    self.first_run = False
 
                 if timerUpdate <= 0:
                     await self.update_timer()
                     timerUpdate = 60
                 else:
                     timerUpdate -= 1
-            except ModbusError as me:
-                self.fail(None, str(me))
-                self.first_run = True
 
-            except Exception as er:
-                self.log.exception(er)
-                self.first_run = True
+                await asyncio.sleep(1)
 
-            await asyncio.sleep(1)
+        except ModbusError as ex:
+            await self.log_modbus_error(ex)
+
+        except Exception as ex:
+            await self.fault(1, f"Error in telemetry loop: {str(ex)}")
+
+    async def poll_loop(self):
+        while True:
+            try:
+                if self._failed_tai is not None:
+                    try:
+                        await self.connect()
+                    except ModbusError as er:
+                        await self.log_modbus_error(er, "While reconnecting:")
+                        await asyncio.sleep(5)
+                        continue
+                elif self.disabled_or_enabled:
+                    await self.telemetry_loop()
+                elif self.summary_state in (salobj.State.STANDBY, salobj.State.FAULT):
+                    pass
+                else:
+                    self.log.critical(f"Unhandled state: {self.summary_state}")
+
+                await asyncio.sleep(1)
+            except Exception as ex:
+                self.log.exception(f"Exception in poll loop: {str(ex)}")
+                await asyncio.sleep(2)
+
+            if self.summary_state == salobj.State.FAULT:
+                await self.disconnect()
+                # end loop
+                return
+
+
+def _statusBits(fields, value):
+    """Helper function. Converts value bits into boolean fields.
+
+    Parameters
+    ----------
+    fields : [`str`]
+        Name of fields to extract. Corresponds to bits in value, with lowest
+        (0x0001) first. Can be None to specify this bit doesn't have any
+        meaning.
+    value : `int`
+        Bit-masked value. Bits corresponds to named values in fields.
+
+    Returns
+    -------
+    bits : {`str` : `bool`}
+        Map where keys are values passed in fields and values are booleans
+        corresponding to whenever that bit is set.
+    """
+    ret = {}
+    for f in fields:
+        if f is not None:
+            ret[f] = value & 0x0001
+        value >>= 1
+    return ret
+
+
+def run_mtaircompressor() -> None:
+    """Run the MTAirCompressor CSC."""
+    asyncio.run(MTAirCompressorCsc.amain(True))

@@ -20,15 +20,11 @@ class MTAirCompressorCscTestCase(
     async def test_bin_script(self):
         await self.check_bin_script(
             name="MTAirCompressor",
-            exe_name="run_mtaircompressor.py",
+            exe_name="run_mtaircompressor",
             index=1,
         )
         await self.check_bin_script(
             name="MTAirCompressor",
-            exe_name="run_mtaircompressor.py",
+            exe_name="run_mtaircompressor",
             index=2,
         )
-
-
-if __name__ == "__main__":
-    unittest.main()
