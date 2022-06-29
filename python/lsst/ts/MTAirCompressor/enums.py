@@ -35,7 +35,8 @@ class ErrorCode(enum.IntEnum):
     The other codes are:
 
     COULD_NOT_CONNECT - raised when ModBus TCP gateway cannot be contacted
-    MODBUS_ERROR - generic Modbus error. Raised when Modbus response wasn't received
+    MODBUS_ERROR - generic Modbus error. Raised when Modbus response wasn't
+        received
     """
 
     COULD_NOT_CONNECT = 98  # cannot connect to compressor

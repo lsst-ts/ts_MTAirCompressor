@@ -8,15 +8,9 @@ source:
 
 build:
   script: python -m pip install --no-deps --ignore-installed .
-  script_env:
-    - PATH
-    - PYTHONPATH
-    - LD_LIBRARY_PATH
-    - OSPL_HOME
-    - PYTHON_BUILD_VERSION
-    - PYTHON_BUILD_LOCATION
-    - TS_CONFIG_MTTCS_DIR
-    - LSST_DDS_DOMAIN
+  noarch: generic
+  entry_points:
+    - run_mtaircompressor = lsst.ts.MTAirCompressor.aircompressor_csc:run_mtaircompressor
 
 test:
   requires:
@@ -24,14 +18,15 @@ test:
     - ts-dds
     - ts-idl {{ idl_version }}
     - ts-salobj {{ salobj_version }}
+    - ts-utils
     - pymodbus
   source_files:
     - python
-    - bin
     - tests
     - setup.cfg
+    - pyproject.toml
   commands:
-    - py.test
+    - pytest
 
 requirements:
   host:
@@ -46,4 +41,5 @@ requirements:
     - setuptools_scm
     - ts-salobj
     - ts-idl
+    - ts-utils
     - pymodbus

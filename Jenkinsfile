@@ -42,40 +42,33 @@ pipeline {
                 // to WORKSPACE to have the authority to install the packages.
                 withEnv(["HOME=${env.WORKSPACE}"]) {
                     sh """
+
                         source /home/saluser/.setup_dev.sh || echo "Loading env failed; continuing..."
 
                         # Update base required packages
+                        git config --global --add safe.directory /opt/lsst/tssw/ts_idl
                         cd /home/saluser/repos/ts_idl
                         /home/saluser/.checkout_repo.sh ${WORK_BRANCHES}
                         git pull
 
                         cd /home/saluser/repos/ts_sal
+                        git config --global --add safe.directory /opt/lsst/tssw/ts_sal
                         /home/saluser/.checkout_repo.sh ${WORK_BRANCHES}
                         git pull
 
+                        git config --global --add safe.directory /opt/lsst/tssw/ts_salobj
                         cd /home/saluser/repos/ts_salobj
                         /home/saluser/.checkout_repo.sh ${WORK_BRANCHES}
                         git pull
 
+                        git config --global --add safe.directory /opt/lsst/tssw/ts_utils
                         cd /home/saluser/repos/ts_utils
                         /home/saluser/.checkout_repo.sh ${WORK_BRANCHES}
                         git pull
 
+                        git config --global --add safe.directory /opt/lsst/tssw/ts_xml
                         cd /home/saluser/repos/ts_xml
                         /home/saluser/.checkout_repo.sh ${WORK_BRANCHES}
-                        git pull
-
-                        # Update additional required packages
-                        cd /home/saluser/repos/ts_config_mttcs
-                        /home/saluser/.checkout_repo.sh ${work_branches}
-                        git pull
-
-                        cd /home/saluser/repos/ts_simactuators
-                        /home/saluser/.checkout_repo.sh ${work_branches}
-                        git pull
-
-                        cd /home/saluser/repos/ts_tcpip
-                        /home/saluser/.checkout_repo.sh ${work_branches}
                         git pull
 
                         # Make IDL files
@@ -89,7 +82,7 @@ pipeline {
                 withEnv(["HOME=${env.WORKSPACE}"]) {
                     sh """
                         source /home/saluser/.setup_dev.sh || echo "Loading env failed; continuing..."
-                        setup -r .
+                        pip install .
                         pytest --cov-report html --cov=${env.MODULE_NAME} --junitxml=${env.XML_REPORT_PATH}
                     """
                 }
@@ -100,7 +93,7 @@ pipeline {
                 withEnv(["HOME=${env.WORKSPACE}"]) {
                     sh """
                         source /home/saluser/.setup_dev.sh || echo "Loading env failed; continuing..."
-                        setup -r .
+                        pip install .
                         package-docs build
                     """
                 }
@@ -112,7 +105,7 @@ pipeline {
                     catchError(buildResult: 'UNSTABLE', stageResult: 'UNSTABLE') {
                         sh '''
                             source /home/saluser/.setup_dev.sh || echo "Loading env failed; continuing..."
-                            setup -r .
+                            pip install .
                             ltd -u ${LSST_IO_CREDS_USR} -p ${LSST_IO_CREDS_PSW} upload \
                                 --product ${DOC_PRODUCT_NAME} --git-ref ${GIT_BRANCH} --dir doc/_build/html
                         '''

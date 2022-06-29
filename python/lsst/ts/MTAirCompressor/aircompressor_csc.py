@@ -19,7 +19,7 @@
 # You should have received a copy of the GNU General Public License
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-__all__ = ["MTAirCompressorCsc"]
+__all__ = ["MTAirCompressorCsc", "run_mtaircompressor"]
 
 import argparse
 import asyncio
@@ -50,7 +50,8 @@ class MTAirCompressorCsc(salobj.BaseCsc):
     initial_state : `lsst.ts.salobj.State`
         CSC initial state.
     simulation_mode : `int`
-        CSC simulation mode. 0 - no simulation, 1 - software simulation (no mock modbus needed)
+        CSC simulation mode. 0 - no simulation, 1 - software simulation (no
+        mock modbus needed).
     """
 
     version = __version__
@@ -75,14 +76,16 @@ class MTAirCompressorCsc(salobj.BaseCsc):
         self.model = None
         self.simulator = None
         self.simulator_task = utils.make_done_future()
-        # True if compressor can be started remotely. Used before start command is issued
-        # to clearly indicate the problem
+        # True if compressor can be started remotely. Used before start command
+        # is issued to clearly indicate the problem
         self._start_by_remote: bool = False
-        # If True, status update is in progress. TODO Will be deprecated and removed in DM-35280
+        # If True, status update is in progress.
+        # TODO Will be deprecated and removed in DM-35280
         self._status_update: bool = False
-        # This will be reseted to None only after connection is properly re-established.
-        # Don't reset it in def connect, as it is needed in poll_loop to report time waiting
-        # for reconnection. None when not failed, TAI when failure was firstly detected
+        # This will be reseted to None only after connection is properly
+        # re-established.  Don't reset it in def connect, as it is needed in
+        # poll_loop to report time waiting for reconnection. None when not
+        # failed, TAI when failure was firstly detected
         self._failed_tai: float = None
 
         self.poll_task = utils.make_done_future()
@@ -122,8 +125,8 @@ class MTAirCompressorCsc(salobj.BaseCsc):
     async def close_tasks(self) -> None:
         await super().close_tasks()
         if self.simulation_mode == 1:
-            await self.simulator.shutdown()
-            await self.simulator_task.cancel()
+            self.simulator.shutdown()
+            self.simulator_task.cancel()
         self.poll_task.cancel()
         await self.disconnect()
 
@@ -172,6 +175,13 @@ class MTAirCompressorCsc(salobj.BaseCsc):
         await self.update_compressor_info()
         self.log.debug(f"Connected to {self.hostname}:{self.port}")
 
+        if self._failed_tai is not None:
+            self.log.info(
+                "Compressor connection is back after "
+                f"{utils.current_tai() - self._failed_tai:.1f} seconds"
+            )
+            self._failed_tai = None
+
     async def disconnect(self):
         self.model = None
         if self.connection is not None:
@@ -205,8 +215,8 @@ class MTAirCompressorCsc(salobj.BaseCsc):
     async def end_enable(self, data):
         """Power on compressor after switching to enable state.
 
-        Raise exception if compressor cannot be powered on. Ignore state transition triggered
-        by auto update.
+        Raise exception if compressor cannot be powered on. Ignore state
+        transition triggered by auto update.
 
         Raises
         ------
@@ -255,7 +265,8 @@ class MTAirCompressorCsc(salobj.BaseCsc):
         self.model.reset()
 
     async def update_status(self):
-        """Read compressor status - 3 status registers starting from address 0x30."""
+        """Read compressor status - 3 status registers starting from address
+        0x30."""
         status = self.model.get_status()
 
         await self.evt_status.set_write(
@@ -475,11 +486,6 @@ class MTAirCompressorCsc(salobj.BaseCsc):
                 if self._failed_tai is not None:
                     try:
                         await self.connect()
-                        self.log.info(
-                            "Compressor connection is back after "
-                            f"{utils.current_tai() - self._failed_tai:.1f} seconds"
-                        )
-                        self._failed_tai = None
                     except ModbusError as er:
                         await self.log_modbus_error(er, "While reconnecting:")
                         await asyncio.sleep(5)
@@ -526,3 +532,8 @@ def _statusBits(fields, value):
             ret[f] = value & 0x0001
         value >>= 1
     return ret
+
+
+def run_mtaircompressor() -> None:
+    """Run the MTAirCompressor CSC."""
+    asyncio.run(MTAirCompressorCsc.amain(True))

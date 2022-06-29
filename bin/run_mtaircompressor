@@ -17,8 +17,6 @@
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 # GNU General Public License for more details.
 #
-import asyncio
+from lsst.ts.MTAirCompressor import run_mtaircompressor
 
-from lsst.ts import MTAirCompressor
-
-asyncio.run(MTAirCompressor.MTAirCompressorCsc.amain(True))
+run_mtaircompressor()
